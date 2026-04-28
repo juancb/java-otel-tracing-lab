@@ -1,9 +1,9 @@
 # OpenTelemetry Collector pipeline.
 #
-# Stage B addition: a `transform/peer_service` processor that rewrites
-# `peer.service=hbase` to `hbase-regionserver` on client spans, so the
-# Stage A service graph collapses the disjoint `consumer -> hbase` edge
-# into a connected component reaching `hbase-regionserver`.
+# Stage B addition: a `transform/peer_service` processor that rewrites the
+# attributes Tempo's service-graph generator uses to label destination nodes,
+# so HBase-related spans collapse onto the real `hbase-regionserver` node
+# instead of phantom `hbase` / `default` nodes.
 
 receivers:
   otlp:
@@ -25,20 +25,27 @@ processors:
         value: local-otel-lab
         action: upsert
 
-  # Stage B: HBase 2.5+ ships its own OTel client-side instrumentation that
-  # hard-codes peer.service="hbase" - which doesn't match any actual
-  # service.name in the lab. Tempo's service-graph generator uses
-  # peer.service for the destination node, so we end up with a phantom
-  # "hbase" node disconnected from hbase-master / hbase-regionserver.
-  # Rewrite client-side spans whose peer.service is the literal "hbase" to
-  # the role we actually expect (regionserver, since it serves the data
-  # path).
+  # HBase 2.5+ ships its own OTel client-side instrumentation. Its outgoing
+  # client spans set:
+  #   - peer.service = "hbase"  (literal string)            -> phantom `hbase` node
+  #   - db.system    = "hbase"
+  #   - db.name      = "default"  (the default namespace)   -> phantom `default` node
+  # Tempo's service-graph generator picks the destination label by checking
+  # peer.service first, then db.name, then db.system. We force any span with
+  # db.system=hbase to advertise peer.service=hbase-regionserver so all three
+  # phantom-source paths collapse onto the real RS node. Catches both the
+  # consumer's data-path spans and HBase Master's internal admin RPC spans.
   transform/peer_service:
     error_mode: ignore
     trace_statements:
       - context: span
         statements:
+          # 1. Direct rewrite of the literal peer.service=hbase. Belt + braces.
           - set(attributes["peer.service"], "hbase-regionserver") where attributes["peer.service"] == "hbase"
+          # 2. Catch-all: every HBase RPC carries db.system=hbase, so this
+          #    covers cases where peer.service is missing or set to something
+          #    else like "default" (the HBase namespace name).
+          - set(attributes["peer.service"], "hbase-regionserver") where attributes["db.system"] == "hbase"
 
   batch:
     send_batch_size: 1024
