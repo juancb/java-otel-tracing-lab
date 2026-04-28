@@ -9,7 +9,7 @@ cluster on a developer laptop.
 
 1. Every JVM-based component runs with the OTel Java agent attached so we can
    see what auto-instrumentation does without writing any tracing code.
-2. A real data flow runs end-to-end: producer -> Kafka -> consumer -> HBase
+2. A real data flow runs end-to-end: producer → Kafka → consumer → HBase
    (HBase in turn uses HDFS and ZooKeeper, so those JVMs show up in traces too).
 3. Traces are queryable in Grafana through Tempo, so the developer experience
    matches what we'd encounter in a production observability stack.
@@ -19,79 +19,36 @@ cluster on a developer laptop.
 ## Topology
 
 ```
-                          ┌─────────────┐
-                          │   Grafana   │
-                          └──────┬──────┘
-                                 │ queries
-                                 ▼
-                          ┌─────────────┐
-                          │    Tempo    │
-                          └─────────────┘
-                                 ▲ OTLP gRPC
-                                 │
-                          ┌──────┴──────┐
-                          │OTel Collector│
-                          └──────▲──────┘
-                                 │
-   ┌─────────────────────────────┼──────────────────────────────────────┐
-   │ OTLP from each agent        │                                      │
-┌──┴──────┐  ┌────────┐  ┌───────┴───┐  ┌────────────┐  ┌──────────┐  ┌─┴────────┐
-│ producer│─▶│ Kafka  │─▶│ consumer  │─▶│ hbase-     │─▶│ hadoop-  │  │ zoo-     │
-│ (Java)  │  │ (KRaft)│  │ (Java)    │  │ master+rs  │  │ nn+dn    │  │ keeper   │
-└─────────┘  └────────┘  └───────────┘  └────────────┘  └──────────┘  └──────────┘
- javaagent    javaagent    javaagent      javaagent      javaagent     javaagent
+   producer (Java)        Kafka (KRaft)        consumer (Java)        HBase                  HDFS
+   ─────────────         ─────────────         ───────────────       ───────────────────    ──────────────
+   javaagent ──┐         javaagent ──┐         javaagent ──┐         master + regionserver  namenode + datanode
+               │                     │                     │         (each with javaagent)  (each with javaagent)
+               │                     │                     │
+               └────────┐    ┌───────┘    ┌────────────────┘
+                        ▼    ▼            ▼                                         ▲
+                   ┌─────────────────────────┐                                      │
+                   │  OpenTelemetry Collector │◀──── OTLP from every JVM ───────────┘
+                   └────────────┬─────────────┘
+                                │ OTLP
+                                ▼
+                            ┌────────┐                ┌──────────┐
+                            │ Tempo  │ ◀── queries ── │ Grafana  │
+                            └────────┘                └──────────┘
 ```
 
 ZooKeeper is included for HBase coordination (HBase still requires ZK; only
 Kafka has moved off it via KRaft). ZK is a JVM, so it gets the agent too.
-
-## What auto-instrumentation actually covers (and doesn't)
-
-Loading the OTel Java agent is necessary but not sufficient for spans to
-appear. The agent only emits a span when it has an instrumentation module
-that wraps a code path the program actually executes. Coverage in this lab:
-
-| JVM service          | What the agent emits                                            |
-|----------------------|-----------------------------------------------------------------|
-| producer             | One `KafkaProducer.send` span per record, with W3C trace context written into Kafka headers. |
-| consumer             | `KafkaConsumer.poll` span per poll, per-record process span, and an HBase client span for each `Put` (which itself wraps the underlying RPC). The trace links back to the producer's send via the propagated headers. |
-| hbase-master, -rs    | Sparse server-side spans for incoming client RPCs, depending on which agent version you run. The HBase server instrumentation in the OTel Java agent is partial. |
-| hadoop-namenode, -dn | A few RPC/IPC spans, mostly sparse. |
-| **kafka (broker)**   | **Almost no spans.** The agent loads, JVM metrics flow to the Collector, but the Kafka *broker* protocol is not auto-instrumented (the agent's Kafka modules target `kafka-clients` and `kafka-streams` — i.e. *clients*, not the broker). |
-| **zookeeper**        | JVM metrics only. The ZK wire protocol is not instrumented. |
-
-Tempo stores traces only. JVM metrics and log records that the agent emits
-flow to the Collector, are stamped with the right service.name resource
-attribute, and end up in the Collector's `debug` exporter — visible via
-`docker compose logs otel-collector` — but they don't appear in Grafana
-because we don't run a metrics or logs backend in this lab.
-
-So the trace picture you'll actually see in Grafana:
-
-```
-producer.send  ─┐
-                │  W3C trace context in Kafka headers
-                │  (broker hop is opaque)
-                ▼
-consumer.poll → consumer.processRecord → hbase.client.put → (server-side spans, partial)
-```
-
-If you want to see broker-side request handling, you need a different
-instrumentation path — the JVM agent isn't going to give you that today.
-The closest options are: (a) Kafka's own JMX metrics (`kafka.network`,
-`RequestMetrics`), scraped through the OTel Collector's `jmxreceiver`;
-(b) Strimzi's experimental Kafka tracing patches; (c) a service-mesh
-sidecar that traces TCP-level connections.
 
 ## Component choices
 
 ### HBase + Hadoop (single custom image)
 
 A single Docker image (`docker/hadoop-hbase/`) bundles Hadoop and HBase
-tarballs. The image's entrypoint takes a role argument (`namenode`,
-`datanode`, `hmaster`, `regionserver`) and starts the right daemon in the
-foreground. This keeps the image build cached and avoids maintaining four
-separate images that all need the same Java + agent + tarball layout.
+tarballs from the Apache mirrors. The image's entrypoint takes a role argument
+(`namenode`, `datanode`, `hmaster`, `regionserver`, `zookeeper`) and starts the
+right daemon in the foreground. This keeps the image build cached and avoids
+maintaining five separate images that all need the same Java + agent + tarball
+layout.
 
 Pseudo-distributed means HBase talks to a real HDFS (one NameNode + one
 DataNode), backed by an external ZooKeeper, with one HMaster and one
@@ -100,29 +57,32 @@ HBase RPC paths you'd see in production.
 
 The agent is baked into the image at `/opt/otel/opentelemetry-javaagent.jar`.
 Each role's environment variable (`HBASE_MASTER_OPTS`, `HBASE_REGIONSERVER_OPTS`,
-`HDFS_NAMENODE_OPTS`, `HDFS_DATANODE_OPTS`) prepends `-javaagent:...` plus
-the resource attributes that identify which service is reporting.
+`HDFS_NAMENODE_OPTS`, `HDFS_DATANODE_OPTS`, `ZOO_CMD_OPTS`) prepends
+`-javaagent:/opt/otel/opentelemetry-javaagent.jar` plus the resource attributes
+that identify which service is reporting.
 
 ### Kafka
 
-`apache/kafka` image in KRaft single-node mode, with the OTel agent layered
-in via a small multi-stage Dockerfile (`docker/kafka/Dockerfile`).
-`KAFKA_OPTS` adds the `-javaagent:` flag and OTel resource attributes. The
-agent loads and connects to the Collector — but as noted above, the broker
-itself doesn't produce useful traces.
-
-### ZooKeeper
-
-`zookeeper:3.9` image with the agent layered in the same way. The agent's
-JVM auto-instrumentation produces a couple of resource-tagged metric
-batches; nothing useful at the protocol level.
+`apache/kafka` image in KRaft single-node mode. The agent is mounted into the
+container at `/opt/otel/opentelemetry-javaagent.jar` (instead of being baked
+into the image, since we don't control that image). `KAFKA_OPTS` adds the
+`-javaagent:` flag and OTel resource attributes.
 
 ### Producer / Consumer
 
-Two Maven modules under `apps/`. Each builds a fat JAR via the Maven Shade
-plugin so the Dockerfile can stay trivial: copy the fat JAR, copy the
-agent JAR, set `JAVA_TOOL_OPTIONS=-javaagent:/opt/otel/agent.jar`. The
-agent picks up these environment variables from compose:
+Two Maven modules under `apps/`:
+
+- `producer` — emits synthetic sensor readings (`device_id`, `metric`,
+  `value`, `timestamp`) as JSON to the `sensor.readings` topic at a configurable
+  rate.
+- `consumer` — polls `sensor.readings`, deserializes, and writes Puts to the
+  HBase table `sensor_readings`. Auto-creates the table on startup.
+
+Each app builds to a fat JAR via the Maven Shade plugin so the Dockerfile is
+trivial: `FROM eclipse-temurin:17-jre`, copy fat JAR, copy agent JAR,
+`ENTRYPOINT java -javaagent:/opt/otel/agent.jar -jar /app/app.jar`.
+
+The agent picks up these environment variables from compose:
 
 - `OTEL_SERVICE_NAME=producer` (or `consumer`, etc.)
 - `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`
@@ -130,15 +90,15 @@ agent picks up these environment variables from compose:
 - `OTEL_TRACES_EXPORTER=otlp`
 - `OTEL_METRICS_EXPORTER=otlp`
 - `OTEL_LOGS_EXPORTER=otlp`
-- `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local-otel-lab`
+- `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local`
 
 ### OpenTelemetry Collector
 
-`otel/opentelemetry-collector-contrib` with two OTLP receivers (gRPC on
-4317, HTTP on 4318) and a `otlp` exporter pointed at Tempo's OTLP receiver.
-A `debug` exporter logs every span/metric/log batch to stdout at `basic`
-verbosity, so the developer can verify *everything* is flowing — including
-the metric/log streams from Kafka and ZK that wouldn't appear in Tempo.
+`otel/opentelemetry-collector-contrib` running with two OTLP receivers (gRPC on
+4317, HTTP on 4318) and a `otlp` exporter pointed at Tempo's OTLP receiver
+(port 4317). A `debug` exporter logs every span to stdout at `basic` verbosity
+so the user can `docker compose logs otel-collector` to see traces flowing.
+
 A `batch` processor and `memory_limiter` sit between receiver and exporter.
 
 ### Tempo
@@ -146,13 +106,13 @@ A `batch` processor and `memory_limiter` sit between receiver and exporter.
 `grafana/tempo` running in monolithic mode (single binary, all components in
 one process), backed by local-filesystem block storage. Receives OTLP gRPC on
 4317 and serves Tempo's HTTP API on 3200 for Grafana. The Tempo JVM is *not*
-in scope for tracing (it's the trace store).
+in scope for tracing (it's the trace store; tracing it would be circular).
 
 ### Grafana
 
 `grafana/grafana` with anonymous access enabled (Editor role). The Tempo
 datasource is provisioned at startup via a YAML in `grafana/provisioning/`.
-A starter dashboard with TraceQL panels per service is also provisioned.
+A starter dashboard is provisioned that shows recent traces by service name.
 
 ## Network and ports
 
@@ -163,12 +123,12 @@ to the host:
 |-----------|-----------|----------------|------------------------|
 | Grafana   | 3000      | 3000           | UI                     |
 | Tempo     | 3200      | 3200           | HTTP API (debug)       |
-| Kafka     | 29092     | 29092          | Bootstrap (host tools) |
+| Kafka     | 9092      | 9092           | Bootstrap (host tools) |
 | HBase UI  | 16010     | 16010          | HBase Master UI        |
 | HDFS UI   | 9870      | 9870           | NameNode UI            |
 | Collector | 4317/4318 | 4317/4318      | OTLP (host tools)      |
 
-## Why an OTel Collector and not direct-to-Tempo?
+## Why the OTel Collector and not direct-to-Tempo?
 
 It mirrors what most production environments look like, and it gives a single
 choke point for adding processors (sampling, attribute scrubbing, batching)
@@ -178,23 +138,45 @@ Tempo to something else (Jaeger, an APM vendor, stdout) by editing one file.
 ## Java agent: which version and how it's wired
 
 The agent JAR is fetched at image build time from the
-`opentelemetry-java-instrumentation` GitHub releases (pinned via build arg
-in each Dockerfile). It lives at `/opt/otel/opentelemetry-javaagent.jar`
-inside every JVM container.
+`opentelemetry-java-instrumentation` GitHub releases (pinned via build arg in
+each Dockerfile and re-fetched if the version changes). It lives at
+`/opt/otel/opentelemetry-javaagent.jar` inside every JVM container.
 
-For our own Java apps we attach it via `JAVA_TOOL_OPTIONS`. For Kafka, HBase,
-Hadoop, and ZooKeeper we attach it via the `*_OPTS` env vars those daemons
-honor on startup. The wiring is declarative and visible in `docker-compose.yml`
-plus the per-service Dockerfile — no shell-script glue.
+For our own Java apps we attach it via `ENTRYPOINT`. For Kafka, HBase, and
+Hadoop we attach it via the `*_OPTS` environment variables those daemons honor
+on startup. This means the entire wiring is declarative and visible in
+`docker-compose.yml` — no shell-script glue.
+
+## What you'll see in Tempo
+
+A typical trace from one producer message looks like:
+
+```
+producer  send → Kafka producer.send  ──┐
+                                        │
+kafka     handle Produce request  ◀─────┘
+kafka     handle Fetch request    ◀──────────┐
+                                             │
+consumer  poll → kafka.poll       ───────────┘
+consumer  process record (manual span)
+consumer  HBase Put              ───────┐
+                                        ▼
+hbase-rs  handle Put RPC
+hbase-rs  WAL append    ───────────────┐
+                                       ▼
+hadoop-dn write block
+```
+
+The exact span layout depends on what the agent's instrumentation modules
+cover; see the [OTel Java instrumentation supported libraries list](https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/main/docs/supported-libraries.md).
 
 ## Known limitations
 
-- Single-node setup. Replication, region splitting, and cross-broker
-  scenarios won't appear.
-- Kafka broker, ZooKeeper, HBase server, and Hadoop daemon traces are
-  sparse-to-empty for the reasons described in "What auto-instrumentation
-  actually covers" above. The agent loads everywhere, but auto-instrumentation
-  isn't magic — it only emits spans where it has matching modules.
-- The metrics and logs streams flow into the Collector but stop at the
-  debug exporter. To see them in Grafana you'd need to add a
-  Prometheus/Loki backend (or remote-write to whatever you use elsewhere).
+- This is a single-node setup. Replication, region splitting, and
+  cross-broker traces will not appear.
+- HBase's RPC instrumentation comes through Hadoop's IPC layer and may surface
+  as generic `rpc.system=hadoop-rpc` spans rather than HBase-specific ones,
+  depending on agent version.
+- ZooKeeper instrumentation is shallow — the agent reports JVM metrics but the
+  ZK protocol itself is not auto-instrumented. We include it primarily to show
+  the JVM resource attributes flow through.

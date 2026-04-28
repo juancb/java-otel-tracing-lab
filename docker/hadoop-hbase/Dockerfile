@@ -29,12 +29,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # --- Download Hadoop --------------------------------------------------------
-# Try the fast CDN mirror first; fall back to the slow long-term archive only
-# if the CDN drops the version (which happens once a release ages out).
-RUN ( curl -fsSL "https://dlcdn.apache.org/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
-       -o /tmp/hadoop.tgz \
-   || curl -fsSL "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
-       -o /tmp/hadoop.tgz ) \
+RUN curl -fsSL "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
+        -o /tmp/hadoop.tgz \
  && mkdir -p /opt \
  && tar -xzf /tmp/hadoop.tgz -C /opt \
  && mv /opt/hadoop-${HADOOP_VERSION} ${HADOOP_HOME} \
@@ -42,10 +38,8 @@ RUN ( curl -fsSL "https://dlcdn.apache.org/hadoop/common/hadoop-${HADOOP_VERSION
 
 # --- Download HBase ---------------------------------------------------------
 # The "-bin" tarball contains the compiled binaries (vs. the source tarball).
-RUN ( curl -fsSL "https://dlcdn.apache.org/hbase/${HBASE_VERSION}/hbase-${HBASE_VERSION}-bin.tar.gz" \
-       -o /tmp/hbase.tgz \
-   || curl -fsSL "https://archive.apache.org/dist/hbase/${HBASE_VERSION}/hbase-${HBASE_VERSION}-bin.tar.gz" \
-       -o /tmp/hbase.tgz ) \
+RUN curl -fsSL "https://archive.apache.org/dist/hbase/${HBASE_VERSION}/hbase-${HBASE_VERSION}-bin.tar.gz" \
+        -o /tmp/hbase.tgz \
  && tar -xzf /tmp/hbase.tgz -C /opt \
  && mv /opt/hbase-${HBASE_VERSION} ${HBASE_HOME} \
  && rm /tmp/hbase.tgz
@@ -57,7 +51,7 @@ RUN mkdir -p /opt/otel \
 
 # --- Configuration ----------------------------------------------------------
 # Site XMLs and env scripts. These are mounted/baked at known paths so that
-# changing a config doesn't require a rebuild - but we also COPY them into the
+# changing a config doesn't require a rebuild — but we also COPY them into the
 # image so a `docker run` with no volumes still works.
 COPY conf/core-site.xml      ${HADOOP_CONF_DIR}/core-site.xml
 COPY conf/hdfs-site.xml      ${HADOOP_CONF_DIR}/hdfs-site.xml
