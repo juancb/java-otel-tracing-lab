@@ -1,0 +1,26 @@
+# Provisions the Prometheus datasource for Stage A.
+#
+# Prometheus stores:
+#   - Tempo's service-graph + span-metrics (RED) data
+#   - Every metric the OTel Java agents emit (heap, GC, kafka.client.*, ...)
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: false
+    editable: true
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST
+      # When Prometheus stores exemplars (trace_id labels on metric samples),
+      # Grafana renders a "View trace" button on graph panels that jumps to
+      # Tempo. The OTel Collector's prometheusremotewrite exporter doesn't
+      # currently emit exemplars, but Tempo's metrics_generator does, so this
+      # works for span-metrics histograms.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo

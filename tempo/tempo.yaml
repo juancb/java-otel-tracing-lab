@@ -1,6 +1,5 @@
 # Grafana Tempo configuration for the local sandbox. Single-binary
-# (monolithic) mode with local-filesystem block storage. This is not suitable
-# for production but is perfect for kicking the tires on traces.
+# (monolithic) mode with local-filesystem block storage.
 
 server:
   http_listen_port: 3200
@@ -18,10 +17,8 @@ distributor:
         http:
           endpoint: 0.0.0.0:4318
 
-# Single-tenant mode (no auth).
 multitenancy_enabled: false
 
-# Holds traces in memory briefly before flushing to the storage backend.
 ingester:
   trace_idle_period: 10s
   max_block_bytes: 1_000_000
@@ -39,7 +36,10 @@ storage:
     wal:
       path: /var/tempo/wal
 
-# Enables service graph & span metrics generation, which Grafana consumes.
+# Generates derived metrics from incoming traces:
+#   - service-graphs:  per (client, server) pair, request rate / errors / latency
+#   - span-metrics:    per service, RED-style histograms
+# Both stream to Prometheus via remote_write so Grafana can render them.
 metrics_generator:
   registry:
     external_labels:
@@ -47,7 +47,9 @@ metrics_generator:
       cluster: local-otel-lab
   storage:
     path: /var/tempo/generator/wal
-    remote_write: []  # We're not running Prometheus in this lab.
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
 
 overrides:
   defaults:

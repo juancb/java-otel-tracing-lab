@@ -1,0 +1,21 @@
+# Prometheus config for the OTel lab.
+#
+# Prometheus is used purely as a remote-write *target* here — it doesn't scrape
+# anything itself. Two upstreams write to it:
+#
+#   1. Tempo's metrics_generator (service-graph + span-metrics) writes derived
+#      metrics computed from incoming traces.
+#   2. The OTel Collector's prometheusremotewrite exporter forwards every
+#      metric the JVM agents emit (heap, GC, threads, kafka.client.*).
+#
+# Run with `--web.enable-remote-write-receiver` so the /api/v1/write endpoint
+# is open. See docker-compose.yml for the actual flag.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: local-otel-lab
+
+# No scrape jobs - everything arrives via remote_write.
+scrape_configs: []

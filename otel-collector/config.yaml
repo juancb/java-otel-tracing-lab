@@ -1,9 +1,10 @@
 # OpenTelemetry Collector pipeline.
 #
-# Receives OTLP from every JVM in the lab on both gRPC and HTTP, buffers a
-# bit, then forwards to Tempo over OTLP gRPC. A `debug` exporter logs every
-# trace at basic verbosity so the developer can `docker compose logs
-# otel-collector` to verify spans are arriving.
+# Receives OTLP from every JVM in the lab on both gRPC and HTTP, then fans out:
+#
+#   traces  -> tempo (OTLP)         + debug (stdout)
+#   metrics -> prometheus (remote_write) + debug
+#   logs    -> debug (no logs backend in Stage A; Stage C will add Loki)
 
 receivers:
   otlp:
@@ -14,21 +15,17 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
-  # Drop early if memory pressure exceeds 80% / 100% of the limit.
   memory_limiter:
     check_interval: 2s
     limit_percentage: 80
     spike_limit_percentage: 25
 
-  # Add a deployment.environment resource attribute on every span/metric/log
-  # so we can filter by environment in Grafana later.
   resource/lab:
     attributes:
       - key: deployment.environment
         value: local-otel-lab
         action: upsert
 
-  # Standard batching to reduce gRPC overhead.
   batch:
     send_batch_size: 1024
     timeout: 5s
@@ -39,8 +36,18 @@ exporters:
     tls:
       insecure: true
 
-  # Console output. Verbosity `basic` prints one line per batch, `detailed`
-  # prints every span. Flip to detailed when investigating a problem.
+  # Forwards every metric the JVM agents emit to Prometheus's remote_write
+  # endpoint. Tempo also writes service-graph + span-metrics directly to
+  # Prometheus on its own; the two streams coexist.
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+    # Promote OTel resource attributes to Prometheus labels so we can filter
+    # by service.name, container, etc. in PromQL.
+    resource_to_telemetry_conversion:
+      enabled: true
+
   debug:
     verbosity: basic
 
@@ -61,13 +68,11 @@ service:
       processors: [memory_limiter, resource/lab, batch]
       exporters: [otlp/tempo, debug]
 
-    # Metrics and logs go to debug only — Tempo is traces-only and we don't
-    # ship a metrics/logs backend in this lab. The pipelines exist so the
-    # agent's metric and log exports don't hit a dead endpoint.
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, resource/lab, batch]
-      exporters: [debug]
+      exporters: [prometheusremotewrite, debug]
+
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource/lab, batch]

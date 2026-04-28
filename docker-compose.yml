@@ -5,12 +5,12 @@
 #                                                  +-> zookeeper (HBase coordination)
 #
 # Every JVM container has the OpenTelemetry Java agent attached and points at
-# `otel-collector`, which forwards OTLP to `tempo`. Grafana pulls traces from
-# Tempo. See docs/ARCHITECTURE.md for the why.
+# `otel-collector`. The collector forwards traces to Tempo (OTLP) and metrics
+# to Prometheus (remote_write). Tempo also remote_writes its own derived
+# service-graph + span-metrics into the same Prometheus. Grafana queries both.
 
 name: otel-lab
 
-# ---------- shared OTel env applied to every JVM service ----------
 x-otel-env: &otel-env
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
   OTEL_EXPORTER_OTLP_PROTOCOL: grpc
@@ -19,10 +19,6 @@ x-otel-env: &otel-env
   OTEL_LOGS_EXPORTER: otlp
   OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local-otel-lab
 
-# ---------- shared build context for the unified Hadoop+HBase image ----------
-# Each role-using service references the same context+image. Compose 2.x
-# deduplicates identical builds, so this image is produced once and reused
-# across namenode, datanode, hbase-master, and hbase-regionserver.
 x-hadoop-hbase-build: &hadoop-hbase-build
   build:
     context: docker/hadoop-hbase
@@ -39,16 +35,16 @@ services:
       - tempo-data:/var/tempo
     ports:
       - "3200:3200"
+    depends_on:
+      prometheus:
+        condition: service_started
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:3200/ready" ]
       interval: 5s
       timeout: 3s
       retries: 20
 
-  # NOTE: no healthcheck on otel-collector. The contrib image is distroless
-  # (no shell, no wget/curl/nc), so any `test:` command would fail forever
-  # and block dependents. Dependents use `service_started` instead. The
-  # collector exposes a real /healthz on :13133 if the host wants to probe.
+  # NOTE: no healthcheck on otel-collector. The contrib image is distroless.
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.110.0
     container_name: otel-collector
@@ -63,6 +59,33 @@ services:
     depends_on:
       tempo:
         condition: service_healthy
+      prometheus:
+        condition: service_started
+
+  # Stage A: metrics store. Receives remote_write from both Tempo
+  # (service-graph + span-metrics) and the OTel Collector (everything the
+  # Java agents emit). No scrape_configs; --web.enable-remote-write-receiver
+  # opens /api/v1/write. Exemplar storage so Grafana can jump trace<->metric.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+      - "--enable-feature=native-histograms"
+      - "--storage.tsdb.out-of-order-time-window=30m"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:9090/-/ready" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -80,6 +103,8 @@ services:
       - "3000:3000"
     depends_on:
       tempo:
+        condition: service_healthy
+      prometheus:
         condition: service_healthy
 
   # --- Coordination ----------------------------------------------------------
@@ -273,6 +298,7 @@ services:
 
 volumes:
   tempo-data:
+  prometheus-data:
   grafana-data:
   hdfs-name:
   hdfs-data:
