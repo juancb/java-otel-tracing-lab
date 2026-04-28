@@ -12,6 +12,12 @@ ROLE="${1:-help}"
 OTEL_AGENT="-javaagent:/opt/otel/opentelemetry-javaagent.jar"
 JMX_AGENT_JAR="/opt/jmx-exporter/jmx_prometheus_javaagent.jar"
 
+# HBase 2.5+ uses log4j2 (HBASE-26802). Point it at our config file so the
+# OTel agent's log4j-mdc-1.0 instrumentation can populate trace_id/span_id
+# in HBase's log lines (Stage C trace<->logs correlation). Hadoop daemons
+# stay on log4j 1.x and don't need this flag.
+HBASE_LOG4J2_OPT="-Dlog4j2.configurationFile=file:${HBASE_CONF_DIR}/log4j2.properties"
+
 : "${OTEL_EXPORTER_OTLP_ENDPOINT:=http://otel-collector:4317}"
 : "${OTEL_EXPORTER_OTLP_PROTOCOL:=grpc}"
 : "${OTEL_TRACES_EXPORTER:=otlp}"
@@ -76,6 +82,7 @@ case "$ROLE" in
     : "${OTEL_SERVICE_NAME:=hbase-master}"
     export OTEL_SERVICE_NAME
     prepend_agents 7072 hbase.yaml HBASE_MASTER_OPTS
+    export HBASE_MASTER_OPTS="${HBASE_LOG4J2_OPT} ${HBASE_MASTER_OPTS}"
     wait_for_hdfs_writable
     exec $HBASE_HOME/bin/hbase --config $HBASE_CONF_DIR master start
     ;;
@@ -84,6 +91,7 @@ case "$ROLE" in
     : "${OTEL_SERVICE_NAME:=hbase-regionserver}"
     export OTEL_SERVICE_NAME
     prepend_agents 7073 hbase.yaml HBASE_REGIONSERVER_OPTS
+    export HBASE_REGIONSERVER_OPTS="${HBASE_LOG4J2_OPT} ${HBASE_REGIONSERVER_OPTS}"
 
     echo "[entrypoint] Waiting for HBase Master (hbase-master:16000)..."
     for i in $(seq 1 60); do

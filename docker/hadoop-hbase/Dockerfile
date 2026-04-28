@@ -57,20 +57,13 @@ COPY conf/hdfs-site.xml      ${HADOOP_CONF_DIR}/hdfs-site.xml
 COPY conf/hbase-site.xml     ${HBASE_CONF_DIR}/hbase-site.xml
 COPY conf/hbase-env.sh       ${HBASE_CONF_DIR}/hbase-env.sh
 COPY conf/hadoop-env.sh      ${HADOOP_CONF_DIR}/hadoop-env.sh
+# log4j 1.x config — still consumed by Hadoop daemons (NameNode, DataNode)
+# and by HBase code paths that hit reload4j directly.
 COPY conf/log4j.properties   ${HBASE_CONF_DIR}/log4j.properties
+COPY conf/log4j.properties   ${HADOOP_CONF_DIR}/log4j.properties
+# log4j2 config — HBase 2.5+ uses log4j2 (HBASE-26802). The OTel agent's
+# log4j-mdc-1.0 instrumentation only populates trace_id/span_id MDC for
+# log4j 2.x, so HBase logs need this file to be trace-correlated.
+COPY conf/log4j2.properties  ${HBASE_CONF_DIR}/log4j2.properties
 
-RUN echo "localhost" > ${HBASE_CONF_DIR}/regionservers \
- && echo "localhost" > ${HADOOP_CONF_DIR}/workers
-
-ENV HBASE_ROOT_LOGGER=INFO,console
-ENV HDFS_NAMENODE_USER=root
-ENV HDFS_DATANODE_USER=root
-ENV HDFS_SECONDARYNAMENODE_USER=root
-ENV HBASE_MANAGES_ZK=false
-
-# --- Entrypoint ------------------------------------------------------------
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
-CMD ["help"]
+RUN echo "localhost" > ${HBASE_CONF_DIR

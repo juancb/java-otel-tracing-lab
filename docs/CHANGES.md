@@ -2,6 +2,44 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-28 - Switch HBase to log4j2 (HBASE-26802)
+
+Closes the last gap in trace<->log correlation: HBase RegionServer / Master
+log lines now carry the `traceId=` of the span they were emitted under.
+
+The OTel Java agent ships two MDC instrumentations: `logback-mdc-1.0` (used
+by producer/consumer) and `log4j-mdc-1.0`. The latter only hooks log4j 2.x
+APIs, not log4j 1.x / reload4j. Our HBase daemons were running on log4j 1.x
+via the existing `log4j.properties`, so `%X{trace_id}` always rendered
+empty. HBASE-26802 (landed in 2.5.0) migrates HBase to log4j2; the 2.5.8
+distribution already ships the log4j2 jars in
+`lib/client-facing-thirdparty/`. We just needed to feed it a config file.
+
+Changes:
+
+- New `docker/hadoop-hbase/conf/log4j2.properties`: log4j2 syntax (root
+  logger, console appender, per-package levels). Pattern preserves the
+  Stage C layout: `traceId=%X{trace_id} spanId=%X{span_id}`.
+- `docker/hadoop-hbase/Dockerfile`: copy `log4j2.properties` into HBase's
+  `conf/` dir. The old `log4j.properties` is still copied (Hadoop daemons
+  consume it) and is also placed in `HADOOP_CONF_DIR` explicitly.
+- `docker/hadoop-hbase/entrypoint.sh`: defines `HBASE_LOG4J2_OPT` =
+  `-Dlog4j2.configurationFile=file:$HBASE_CONF_DIR/log4j2.properties` and
+  prepends it to `HBASE_MASTER_OPTS` / `HBASE_REGIONSERVER_OPTS`. Hadoop
+  daemons are unchanged.
+
+Scope decision: Hadoop NameNode/DataNode stay on log4j 1.x. Switching
+Hadoop to log4j2 means fighting the Hadoop classpath (reload4j is pulled
+in transitively), and the spans we care about for this lab live in HBase
+RegionServers, not Hadoop daemons. NN/DN log lines will still show empty
+`traceId=` — acceptable trade for not destabilizing the build.
+
+Verify after `docker compose up -d --build hbase-master hbase-regionserver`:
+- `docker compose logs hbase-regionserver | grep traceId=` should now show
+  non-empty trace IDs on lines emitted while servicing client RPCs.
+- In Grafana Loki Explore, `{service="hbase-regionserver"}` lines should
+  carry traceId values that link (via `derivedFields`) to Tempo traces.
+
 ## 2026-04-28 - Stage C: Loki + Alloy + trace-id correlation
 
 Closes the trace<->logs gap. Click a slow span in Tempo Explore -> jump to
@@ -159,43 +197,4 @@ future-me doesn't try to add it back.
 - YAML/XML/JSON parse pass over every config in `tempo/`, `otel-collector/`,
   `grafana/`, and `docker/hadoop-hbase/conf/`.
 - Trimmed null-byte padding that the Write tool left on the Java sources
-  (NTFS mount quirk that shows up only on `wc -c`, not on `Read`).
-- Static review of Java code: balanced braces, complete record decls,
-  cleaned imports.
-
-## 2026-04-27 - Compose + Java apps + observability stack
-
-- `docker/kafka/Dockerfile` and `docker/zookeeper/Dockerfile`: multi-stage
-  builds that bake the OTel Java agent into the official `apache/kafka:3.8.0`
-  and `zookeeper:3.9` images.
-- `tempo/tempo.yaml`: monolithic mode, OTLP receivers, local-filesystem
-  block storage, service-graph + span-metrics generators on by default.
-- `otel-collector/config.yaml`: OTLP in, Tempo + debug exporter out, with
-  `memory_limiter`, `batch`, and a `resource/lab` processor.
-- `grafana/provisioning/`: Tempo datasource + starter trace-search dashboard.
-- `apps/`: Maven multi-module project (parent + producer + consumer fat
-  jars built via Shade plugin, Dockerfiles bake in agent + JAVA_TOOL_OPTIONS).
-- `docker-compose.yml`: 11 services tied together with healthcheck-gated
-  depends_on ordering and the shared `x-otel-env` anchor.
-
-## 2026-04-27 - Hadoop+HBase image
-
-- `docker/hadoop-hbase/Dockerfile`: Temurin 11 JDK base, Hadoop 3.3.6,
-  HBase 2.5.8, OTel agent 2.10.0. Later switched primary mirror to
-  `dlcdn.apache.org` for build speed (archive.apache.org is throttled).
-- Role-based `entrypoint.sh` supports `namenode`, `datanode`, `hmaster`,
-  `regionserver`, `shell`. Auto-formats the NameNode on first start.
-- Site XMLs in `docker/hadoop-hbase/conf/`: distributed mode, HDFS root,
-  ZK at `zookeeper:2181`, Java 11 module-access flags.
-- OTel agent attached via daemon-specific `*_OPTS` env vars in entrypoint.
-
-## 2026-04-27 - Initial scaffold
-
-- Created repo structure: `apps/`, `docker/`, `otel-collector/`, `tempo/`,
-  `grafana/`, `docs/`.
-- Decisions captured in ARCHITECTURE.md:
-  - Single custom image for Hadoop+HBase, role-based entrypoint.
-  - Kafka in KRaft mode (single node).
-  - OTel Java agent attached to *every* JVM container, OTLP to a shared
-    Collector, Collector exports to Tempo, Grafana queries Tempo.
-  - Synthetic IoT sensor telemetry as toy ingest data.
+  (NTFS mount qu
