@@ -1,0 +1,25 @@
+# Build output
+apps/**/target/
+*.class
+*.jar
+!docker/otel/*.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local volumes (compose creates named volumes; just in case)
+data/
+volumes/
+
+# Logs
+*.log
+logs/
+
+# Maven wrapper artifacts (we ship just the wrapper script)
+.mvn/wrapper/maven-wrapper.jar
