@@ -1,22 +1,16 @@
 <?xml version="1.0"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
 <configuration>
-  <!--
-    Tell HBase we are NOT in standalone mode. This forces it to use HDFS as
-    the backing store and an external ZooKeeper for coordination.
-  -->
   <property>
     <name>hbase.cluster.distributed</name>
     <value>true</value>
   </property>
 
-  <!-- Root directory of the HBase store within HDFS. -->
   <property>
     <name>hbase.rootdir</name>
     <value>hdfs://namenode:8020/hbase</value>
   </property>
 
-  <!-- External ZooKeeper ensemble (just one node here). -->
   <property>
     <name>hbase.zookeeper.quorum</name>
     <value>zookeeper</value>
@@ -26,10 +20,6 @@
     <value>2181</value>
   </property>
 
-  <!--
-    Bind addresses on all interfaces so containers can reach each other and
-    the developer can poke the Master UI from the host.
-  -->
   <property>
     <name>hbase.master.hostname</name>
     <value>hbase-master</value>
@@ -55,24 +45,39 @@
     <value>0.0.0.0</value>
   </property>
 
-  <!-- Disable the "wait for X RegionServers before allowing assignments" race. -->
   <property>
     <name>hbase.master.wait.on.regionservers.mintostart</name>
     <value>1</value>
   </property>
 
-  <!-- Speed up failure detection in the demo. -->
   <property>
     <name>zookeeper.session.timeout</name>
     <value>30000</value>
   </property>
 
-  <!--
-    Tell HBase that the unsafe stream capabilities check is fine. On some
-    HDFS versions HBase complains; this disables the abort.
-  -->
   <property>
     <name>hbase.unsafe.stream.capability.enforce</name>
     <value>false</value>
+  </property>
+
+  <!--
+    KEY FIX: HBase 2.5.x's default AsyncFSWAL provider uses reflection into
+    Hadoop HDFS internals that were tested against Hadoop 3.2.x. Hadoop 3.3.x
+    shifted some Netty/protobuf class structure, breaking the reflection with
+    `java.lang.IllegalArgumentException: object is not an instance of declaring class`
+    in ProtobufDecoder.<init> -> FanOutOneBlockAsyncDFSOutputHelper.processWriteBlockResponse.
+    The master can't open its WAL, so it never finishes init, RegionServer
+    never registers, deadlock.
+
+    Switching to the synchronous `filesystem` WAL provider avoids the
+    reflection path entirely. Slower per write, but works against any Hadoop.
+  -->
+  <property>
+    <name>hbase.wal.provider</name>
+    <value>filesystem</value>
+  </property>
+  <property>
+    <name>hbase.wal.meta_provider</name>
+    <value>filesystem</value>
   </property>
 </configuration>
