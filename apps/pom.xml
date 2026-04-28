@@ -9,10 +9,10 @@
 
     <name>OTel Lab Apps (parent)</name>
     <description>
-        Aggregates the producer and consumer modules. Centralizes Java version,
-        dependency versions, and build plugin configuration. Each module is a
-        runnable fat-jar built via maven-shade-plugin so the Dockerfile stays
-        simple.
+        Aggregates the producer and consumer modules. Centralizes Java
+        version, dependency versions, and build plugin configuration. Each
+        module is a runnable fat-jar built via maven-shade-plugin so the
+        Dockerfile stays simple.
     </description>
 
     <modules>
@@ -27,7 +27,6 @@
 
         <kafka.version>3.8.0</kafka.version>
         <hbase.version>2.5.8</hbase.version>
-        <hadoop.version>3.3.6</hadoop.version>
         <jackson.version>2.17.2</jackson.version>
         <slf4j.version>2.0.13</slf4j.version>
         <logback.version>1.5.6</logback.version>
@@ -43,15 +42,20 @@
                 <artifactId>kafka-clients</artifactId>
                 <version>${kafka.version}</version>
             </dependency>
+            <!--
+                hbase-shaded-client: bundles a relocated Hadoop. This avoids
+                the classic NoSuchMethodError between hadoop-common 3.3+
+                (HadoopKerberosName) and hadoop-auth 3.2.x (KerberosName)
+                that hits when you mix-and-match transitive Hadoop versions.
+                The unshaded org.apache.hadoop.hbase.* and the
+                org.apache.hadoop.conf.Configuration that HBase exposes are
+                kept at their original package paths, so user code is
+                unchanged.
+            -->
             <dependency>
                 <groupId>org.apache.hbase</groupId>
-                <artifactId>hbase-client</artifactId>
+                <artifactId>hbase-shaded-client</artifactId>
                 <version>${hbase.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.hadoop</groupId>
-                <artifactId>hadoop-common</artifactId>
-                <version>${hadoop.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>

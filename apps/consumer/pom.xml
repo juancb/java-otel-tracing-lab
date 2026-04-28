@@ -13,9 +13,9 @@
     <name>OTel Lab — Kafka to HBase Consumer</name>
     <description>
         Polls Kafka, deserializes sensor readings, and writes Puts to HBase.
-        Both the Kafka client and the HBase client are auto-instrumented by
-        the OTel Java agent attached at runtime, so this module contains no
-        explicit tracing logic.
+        Uses hbase-shaded-client so the bundled Hadoop versions are
+        guaranteed-consistent (avoids HadoopKerberosName / KerberosName
+        version-skew NoSuchMethodError).
     </description>
 
     <dependencies>
@@ -25,11 +25,7 @@
         </dependency>
         <dependency>
             <groupId>org.apache.hbase</groupId>
-            <artifactId>hbase-client</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.hadoop</groupId>
-            <artifactId>hadoop-common</artifactId>
+            <artifactId>hbase-shaded-client</artifactId>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
