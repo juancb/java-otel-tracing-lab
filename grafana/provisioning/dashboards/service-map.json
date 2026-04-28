@@ -25,8 +25,8 @@
   "liveNow": true,
   "panels": [
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "Dependency graph derived from observed traffic. Click any node to drill into the per-service detail dashboard.",
+      "datasource": {"type": "tempo", "uid": "tempo"},
+      "description": "Dependency graph derived from observed traffic. Tempo's serviceMap query returns the right node/edge schema for the Node Graph panel. Click any node to drill into the per-service detail dashboard.",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "id": 1,
       "options": {
@@ -45,11 +45,8 @@
       },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (client, server) (rate(traces_service_graph_request_total[$__rate_interval]))",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "{{client}} -> {{server}}",
+          "datasource": {"type": "tempo", "uid": "tempo"},
+          "queryType": "serviceMap",
           "refId": "A"
         }
       ],
@@ -152,5 +149,5 @@
   "time": {"from": "now-15m", "to": "now"},
   "title": "OTel Lab — service map + RED",
   "uid": "otel-lab-service-map",
-  "version": 2
+  "version": 3
 }
