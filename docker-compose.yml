@@ -45,6 +45,10 @@ services:
       timeout: 3s
       retries: 20
 
+  # NOTE: no healthcheck on otel-collector. The contrib image is distroless
+  # (no shell, no wget/curl/nc), so any `test:` command would fail forever
+  # and block dependents. Dependents use `service_started` instead. The
+  # collector exposes a real /healthz on :13133 if the host wants to probe.
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.110.0
     container_name: otel-collector
@@ -59,11 +63,6 @@ services:
     depends_on:
       tempo:
         condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "wget", "-qO-", "http://localhost:13133" ]
-      interval: 5s
-      timeout: 3s
-      retries: 20
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -98,7 +97,7 @@ services:
       - "2181:2181"
     depends_on:
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: [ "CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok" ]
       interval: 5s
@@ -120,7 +119,7 @@ services:
       - hdfs-name:/data/dfs/name
     depends_on:
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: [ "CMD-SHELL", "curl -sf http://localhost:9870/ > /dev/null" ]
       interval: 10s
@@ -220,7 +219,7 @@ services:
       - kafka-data:/var/lib/kafka/data
     depends_on:
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
       interval: 10s
@@ -246,7 +245,7 @@ services:
       kafka:
         condition: service_healthy
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
   consumer:
@@ -269,7 +268,7 @@ services:
       hbase-regionserver:
         condition: service_healthy
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
 volumes:
