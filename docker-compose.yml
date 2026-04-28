@@ -309,10 +309,17 @@ services:
     depends_on:
       otel-collector:
         condition: service_started
+    # Healthcheck must NOT spawn a JVM. The kafka container's KAFKA_OPTS
+    # chains the OTel agent + JMX exporter; any kafka-*.sh CLI invoked
+    # inside the container inherits that and gets a 10+ second cold start
+    # from class transformation, blowing any reasonable timeout. So we use
+    # a plain TCP probe on the broker listener instead. "Listener accepts
+    # connections" is exactly what producer/consumer need (they retry on
+    # connect until they get a response anyway).
     healthcheck:
-      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
-      interval: 10s
-      timeout: 5s
+      test: [ "CMD-SHELL", "bash -c '</dev/tcp/localhost/9092' || exit 1" ]
+      interval: 5s
+      timeout: 3s
       retries: 30
       start_period: 30s
 
@@ -346,25 +353,4 @@ services:
       <<: *otel-env
       OTEL_SERVICE_NAME: consumer
       BOOTSTRAP_SERVERS: kafka:9092
-      TOPIC: sensor.readings
-      GROUP_ID: sensor-consumer
-      HBASE_ZK_QUORUM: zookeeper
-      HBASE_TABLE: sensor_readings
-    depends_on:
-      kafka:
-        condition: service_healthy
-      hbase-regionserver:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
-    restart: unless-stopped
-
-volumes:
-  tempo-data:
-  prometheus-data:
-  grafana-data:
-  loki-data:
-  alloy-data:
-  hdfs-name:
-  hdfs-data:
-  kafka-data:
+      TOPIC: s
