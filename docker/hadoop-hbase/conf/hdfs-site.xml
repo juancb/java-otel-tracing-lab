@@ -1,17 +1,11 @@
 <?xml version="1.0"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
 <configuration>
-  <!-- Single replica because we have one DataNode. -->
   <property>
     <name>dfs.replication</name>
     <value>1</value>
   </property>
 
-  <!--
-    Persist NameNode metadata and DataNode blocks under /data inside the
-    container. The compose file mounts a named volume there, so HDFS state
-    survives container restarts (but not `compose down -v`).
-  -->
   <property>
     <name>dfs.namenode.name.dir</name>
     <value>/data/dfs/name</value>
@@ -21,20 +15,35 @@
     <value>/data/dfs/data</value>
   </property>
 
-  <!-- Bind on all interfaces so the DataNode can reach the NameNode. -->
+  <!--
+    KEY FIX: rpc-address is what *clients and DataNodes dial*. It must be the
+    hostname they can resolve, NOT 0.0.0.0. Use rpc-bind-host=0.0.0.0
+    separately to make the NameNode bind on all interfaces.
+  -->
   <property>
     <name>dfs.namenode.rpc-address</name>
-    <value>0.0.0.0:8020</value>
+    <value>namenode:8020</value>
   </property>
   <property>
-    <name>dfs.namenode.http-address</name>
-    <value>0.0.0.0:9870</value>
+    <name>dfs.namenode.rpc-bind-host</name>
+    <value>0.0.0.0</value>
   </property>
 
-  <!--
-    DataNode hostname needs to resolve from the NameNode's POV. In compose
-    the service name `datanode` is the canonical hostname.
-  -->
+  <property>
+    <name>dfs.namenode.http-address</name>
+    <value>namenode:9870</value>
+  </property>
+  <property>
+    <name>dfs.namenode.http-bind-host</name>
+    <value>0.0.0.0</value>
+  </property>
+
+  <!-- Service-RPC port (used for DN reports). Same split. -->
+  <property>
+    <name>dfs.namenode.servicerpc-bind-host</name>
+    <value>0.0.0.0</value>
+  </property>
+
   <property>
     <name>dfs.datanode.use.datanode.hostname</name>
     <value>true</value>
@@ -44,10 +53,6 @@
     <value>true</value>
   </property>
 
-  <!--
-    Turn off permission checking. This is a sandbox cluster; nothing about
-    permissions teaches us anything about OTel.
-  -->
   <property>
     <name>dfs.permissions.enabled</name>
     <value>false</value>
