@@ -1,0 +1,74 @@
+# OpenTelemetry Collector pipeline.
+#
+# Receives OTLP from every JVM in the lab on both gRPC and HTTP, buffers a
+# bit, then forwards to Tempo over OTLP gRPC. A `debug` exporter logs every
+# trace at basic verbosity so the developer can `docker compose logs
+# otel-collector` to verify spans are arriving.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Drop early if memory pressure exceeds 80% / 100% of the limit.
+  memory_limiter:
+    check_interval: 2s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Add a deployment.environment resource attribute on every span/metric/log
+  # so we can filter by environment in Grafana later.
+  resource/lab:
+    attributes:
+      - key: deployment.environment
+        value: local-otel-lab
+        action: upsert
+
+  # Standard batching to reduce gRPC overhead.
+  batch:
+    send_batch_size: 1024
+    timeout: 5s
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Console output. Verbosity `basic` prints one line per batch, `detailed`
+  # prints every span. Flip to detailed when investigating a problem.
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/lab, batch]
+      exporters: [otlp/tempo, debug]
+
+    # Metrics and logs go to debug only — Tempo is traces-only and we don't
+    # ship a metrics/logs backend in this lab. The pipelines exist so the
+    # agent's metric and log exports don't hit a dead endpoint.
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/lab, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/lab, batch]
+      exporters: [debug]

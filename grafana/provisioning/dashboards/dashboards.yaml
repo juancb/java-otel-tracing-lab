@@ -1,0 +1,13 @@
+# Tells Grafana to load dashboard JSONs from /etc/grafana/provisioning/dashboards
+apiVersion: 1
+
+providers:
+  - name: 'OTel Lab dashboards'
+    orgId: 1
+    folder: 'OTel Lab'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

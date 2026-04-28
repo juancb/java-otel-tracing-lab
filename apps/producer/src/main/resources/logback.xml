@@ -1,0 +1,15 @@
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+
+  <!-- Quieter Kafka client logs so OTel traces aren't drowned out. -->
+  <logger name="org.apache.kafka" level="WARN"/>
+  <logger name="io.opentelemetry" level="INFO"/>
+</configuration>

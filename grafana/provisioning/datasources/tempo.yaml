@@ -1,0 +1,24 @@
+# Provisions the Tempo datasource at Grafana startup. Documented at
+# https://grafana.com/docs/grafana/latest/administration/provisioning/#data-sources
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: true
+    editable: true
+    jsonData:
+      # Disables the "send-from-Grafana" features we don't have a metrics
+      # backend for in this lab.
+      tracesToMetrics:
+        datasourceUid: ''
+      serviceMap:
+        datasourceUid: ''
+      nodeGraph:
+        enabled: true
+      # Show service.name and span.name in the search UI by default.
+      search:
+        hide: false

@@ -1,0 +1,55 @@
+# Grafana Tempo configuration for the local sandbox. Single-binary
+# (monolithic) mode with local-filesystem block storage. This is not suitable
+# for production but is perfect for kicking the tires on traces.
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9096
+  log_level: info
+
+# Tempo can receive traces directly via OTLP. We accept both gRPC (4317) and
+# HTTP (4318) so the OTel Collector — and any direct OTLP client — can push.
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+# Single-tenant mode (no auth).
+multitenancy_enabled: false
+
+# Holds traces in memory briefly before flushing to the storage backend.
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+
+# Enables service graph & span metrics generation, which Grafana consumes.
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      cluster: local-otel-lab
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write: []  # We're not running Prometheus in this lab.
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics]

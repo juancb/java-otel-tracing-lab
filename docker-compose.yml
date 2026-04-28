@@ -1,0 +1,279 @@
+# End-to-end docker-compose for the Kafka -> HBase OTel tracing lab.
+#
+# Topology (left to right in the data flow):
+#   producer -> kafka -> consumer -> hbase-master + hbase-regionserver -> namenode + datanode
+#                                                  +-> zookeeper (HBase coordination)
+#
+# Every JVM container has the OpenTelemetry Java agent attached and points at
+# `otel-collector`, which forwards OTLP to `tempo`. Grafana pulls traces from
+# Tempo. See docs/ARCHITECTURE.md for the why.
+
+name: otel-lab
+
+# ---------- shared OTel env applied to every JVM service ----------
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local-otel-lab
+
+services:
+  # ─────────────────────────── Observability stack ───────────────────────────
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: tempo
+    command: [ "-config.file=/etc/tempo/tempo.yaml" ]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"  # Tempo HTTP (datasource + debug)
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3200/ready" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    container_name: otel-collector
+    command: [ "--config=/etc/otel/config.yaml" ]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC (host tools)
+      - "4318:4318"   # OTLP HTTP
+      - "13133:13133" # health check
+      - "55679:55679" # zpages
+    depends_on:
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:13133" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      tempo:
+        condition: service_healthy
+
+  # ─────────────────────────── Coordination ───────────────────────────────────
+  zookeeper:
+    build:
+      context: docker/zookeeper
+    image: otel-lab/zookeeper:local
+    container_name: zookeeper
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: zookeeper
+      ZOO_4LW_COMMANDS_WHITELIST: "ruok,stat,mntr,conf"
+      # Attach the OTel agent to the ZK JVM. apache/zookeeper image honors
+      # SERVER_JVMFLAGS for the running daemon.
+      SERVER_JVMFLAGS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar"
+    ports:
+      - "2181:2181"
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ─────────────────────────── HDFS ───────────────────────────────────────────
+  namenode:
+    build:
+      context: docker/hadoop-hbase
+    image: otel-lab/hadoop-hbase:local
+    container_name: namenode
+    command: [ "namenode" ]
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: hadoop-namenode
+    ports:
+      - "9870:9870" # NameNode UI
+      - "8020:8020" # HDFS RPC
+    volumes:
+      - hdfs-name:/data/dfs/name
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:9870/ > /dev/null" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  datanode:
+    image: otel-lab/hadoop-hbase:local
+    container_name: datanode
+    command: [ "datanode" ]
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: hadoop-datanode
+    volumes:
+      - hdfs-data:/data/dfs/data
+    depends_on:
+      namenode:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:9864/ > /dev/null" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # ─────────────────────────── HBase ──────────────────────────────────────────
+  hbase-master:
+    image: otel-lab/hadoop-hbase:local
+    container_name: hbase-master
+    command: [ "hmaster" ]
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: hbase-master
+    ports:
+      - "16000:16000" # Master RPC
+      - "16010:16010" # Master UI
+    depends_on:
+      datanode:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:16010/ > /dev/null" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  hbase-regionserver:
+    image: otel-lab/hadoop-hbase:local
+    container_name: hbase-regionserver
+    command: [ "regionserver" ]
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: hbase-regionserver
+    ports:
+      - "16030:16030" # RegionServer UI
+    depends_on:
+      hbase-master:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:16030/ > /dev/null" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ─────────────────────────── Kafka (KRaft) ──────────────────────────────────
+  kafka:
+    build:
+      context: docker/kafka
+    image: otel-lab/kafka:local
+    container_name: kafka
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: kafka
+
+      # KRaft single-node config (broker AND controller in one process).
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+
+      # Attach OTel agent. apache/kafka image's launch script honors KAFKA_OPTS.
+      KAFKA_OPTS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar"
+    ports:
+      - "9092:9092"   # in-network bootstrap (mostly unused from host)
+      - "29092:29092" # host bootstrap (use this from your laptop tools)
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # ─────────────────────────── Apps ───────────────────────────────────────────
+  producer:
+    build:
+      context: apps
+      dockerfile: producer/Dockerfile
+    image: otel-lab/producer:local
+    container_name: producer
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: producer
+      BOOTSTRAP_SERVERS: kafka:9092
+      TOPIC: sensor.readings
+      RATE_PER_SEC: "5"
+      NUM_DEVICES: "50"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    restart: unless-stopped
+
+  consumer:
+    build:
+      context: apps
+      dockerfile: consumer/Dockerfile
+    image: otel-lab/consumer:local
+    container_name: consumer
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: consumer
+      BOOTSTRAP_SERVERS: kafka:9092
+      TOPIC: sensor.readings
+      GROUP_ID: sensor-consumer
+      HBASE_ZK_QUORUM: zookeeper
+      HBASE_TABLE: sensor_readings
+    depends_on:
+      kafka:
+        condition: service_healthy
+      hbase-regionserver:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  tempo-data:
+  grafana-data:
+  hdfs-name:
+  hdfs-data:
+  kafka-data:
