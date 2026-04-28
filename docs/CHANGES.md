@@ -2,6 +2,45 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-28 - Stage C: Loki + Alloy + trace-id correlation
+
+Closes the trace<->logs gap. Click a slow span in Tempo Explore -> jump to
+the exact log lines that produced it.
+
+- New `loki/config.yaml`: single-binary Loki with TSDB indexes, local
+  filesystem chunks, 72h retention, structured-metadata enabled.
+- New `alloy/config.alloy`: Grafana Alloy discovers all containers via the
+  Docker socket, scrapes stdout/stderr, ships log lines to Loki labelled
+  by `service` (compose service name) and `container` (container name).
+- `docker-compose.yml`: added `loki` (port 3100) and `alloy` (port 12345)
+  services. Grafana now `depends_on: loki: service_healthy` so the Loki
+  datasource provisions cleanly on first start. Two new volumes:
+  `loki-data`, `alloy-data`.
+- `apps/{producer,consumer}/src/main/resources/logback.xml`: log pattern
+  now prefixes every line with `traceId=%X{trace_id:-} spanId=%X{span_id:-}`.
+  The OTel Java agent's logback-mdc-1.0 instrumentation populates these
+  MDC keys whenever the calling thread is inside a span.
+- `docker/hadoop-hbase/conf/log4j.properties`: matching change for HBase
+  and Hadoop daemons (log4j 1.x equivalent of the logback pattern).
+- `grafana/provisioning/datasources/loki.yaml`: new datasource. Configured
+  `derivedFields` so any `traceId=<id>` matched in a log line renders as a
+  clickable link to the Tempo datasource for that trace.
+- `grafana/provisioning/datasources/tempo.yaml`: added `tracesToLogsV2`
+  config. In Tempo Explore, every span now offers a "Logs for this span"
+  button that pivots into Loki, filtered to `{service="<name>"} |= "<traceId>"`.
+- New dashboard `grafana/provisioning/dashboards/logs.json`: live log tail
+  across all services with a `service` template variable.
+- Service-detail dashboard now has a "Logs for ${service}" link in its
+  header.
+
+Operator workflow this enables:
+1. Service map / RED dashboard shows consumer p99 spike at 14:23.
+2. Click the consumer node -> service-detail dashboard, "Recent traces" panel.
+3. Click a slow trace -> Tempo Explore opens that trace.
+4. Click "Logs for this span" on the consumer's HBase Put span ->
+   filtered Loki query showing the consumer's log lines for *that* trace.
+5. Bingo: the actual stack trace / message that explains the latency.
+
 ## 2026-04-28 - Stage B: JMX scrapers + service-graph join
 
 Adds the metrics that the Java agent's auto-instrumentation can't produce

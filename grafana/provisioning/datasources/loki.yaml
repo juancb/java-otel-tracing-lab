@@ -1,0 +1,25 @@
+# Provisions the Loki datasource for Stage C.
+#
+# `derivedFields` lets Loki rows be parsed for trace IDs and rendered as
+# clickable links into Tempo. The producer/consumer log pattern includes
+# `traceId=<id>`; the regex below captures the id and links it through to
+# the Tempo datasource.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: true
+    jsonData:
+      timeout: 60
+      maxLines: 1000
+      derivedFields:
+        - name: TraceID
+          matcherRegex: 'traceId=([a-f0-9]{16,32})'
+          datasourceUid: tempo
+          url: '$${__value.raw}'
+          urlDisplayLabel: 'View trace in Tempo'

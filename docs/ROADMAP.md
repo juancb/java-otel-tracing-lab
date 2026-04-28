@@ -60,7 +60,7 @@ parts of the trace that are otherwise opaque.
 
 **Depends on:** Stage A (metrics need somewhere to land).
 
-## Stage C — Loki + Alloy + trace-id correlation
+## Stage C - Loki + Alloy + trace-id correlation  [DONE]
 
 Traces tell you what; logs tell you why. Linking them is the difference
 between "consumer threw an exception" and "consumer threw

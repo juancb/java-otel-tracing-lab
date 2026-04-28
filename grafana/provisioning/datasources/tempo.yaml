@@ -1,5 +1,7 @@
-# Provisions the Tempo datasource. Stage A turns on the Service Map and
-# Traces-to-Metrics features, both of which need a Prometheus datasource UID.
+# Tempo datasource. Stage A enabled Service Map / Traces-to-Metrics. Stage C
+# adds Traces-to-Logs (tracesToLogsV2) so clicking a span in Explore offers
+# a "Logs for this span" button that pivots into Loki, filtered to the
+# matching service + the trace id.
 apiVersion: 1
 
 datasources:
@@ -11,16 +13,9 @@ datasources:
     isDefault: true
     editable: true
     jsonData:
-      # The Service Map / Service Graph panel queries Tempo's
-      # `traces_service_graph_*` metrics, which Tempo writes to Prometheus
-      # via remote_write. Pointing Grafana at the same Prometheus closes
-      # the loop.
       serviceMap:
         datasourceUid: prometheus
 
-      # When you click a span in Explore, Grafana can pivot to PromQL
-      # against the linked metric backend. Useful for "what was the request
-      # rate for this service when this trace happened".
       tracesToMetrics:
         datasourceUid: prometheus
         spanStartTimeShift: '-2m'
@@ -34,6 +29,19 @@ datasources:
             query: 'sum by (service) (rate(traces_spanmetrics_calls_total{$$__tags, status_code="STATUS_CODE_ERROR"}[$$__rate_interval]))'
           - name: 'p99 latency (span-metrics)'
             query: 'histogram_quantile(0.99, sum by (le, service) (rate(traces_spanmetrics_latency_bucket{$$__tags}[$$__rate_interval])))'
+
+      # Stage C: jump trace -> logs.
+      # filterByTraceID=true makes Grafana add a `|= "<traceId>"` filter to
+      # the generated LogQL query. tags maps span attribute service.name to
+      # the Loki label `service`.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-2m'
+        spanEndTimeShift: '2m'
+        filterByTraceID: true
+        filterBySpanID: false
+        tags:
+          - { key: 'service.name', value: 'service' }
 
       nodeGraph:
         enabled: true

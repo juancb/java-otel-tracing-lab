@@ -1,7 +1,15 @@
 <configuration>
   <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
     <encoder>
-      <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+      <!-- The OTel Java agent's logback-mdc-1.0 instrumentation populates
+           these MDC keys whenever the calling thread is inside a span:
+             trace_id   - 32-char hex trace identifier (W3C)
+             span_id    - 16-char hex span identifier
+             trace_flags
+           Including them in the layout makes every log line correlatable
+           with traces in Tempo (Stage C). The `:-` is logback's "default
+           if missing" syntax; lines outside any span get traceId= empty. -->
+      <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] traceId=%X{trace_id:-} spanId=%X{span_id:-} %logger{36} - %msg%n</pattern>
     </encoder>
   </appender>
 
@@ -9,7 +17,6 @@
     <appender-ref ref="CONSOLE"/>
   </root>
 
-  <!-- Quieter Kafka client logs so OTel traces aren't drowned out. -->
   <logger name="org.apache.kafka" level="WARN"/>
   <logger name="io.opentelemetry" level="INFO"/>
 </configuration>

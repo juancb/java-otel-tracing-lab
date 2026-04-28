@@ -105,6 +105,46 @@ services:
         condition: service_healthy
       prometheus:
         condition: service_healthy
+      loki:
+        condition: service_healthy
+
+  # Stage C: log store. Loki receives logs from Alloy, indexed by service +
+  # container labels.
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: loki
+    command: [ "-config.file=/etc/loki/config.yaml" ]
+    volumes:
+      - ./loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/var/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3100/ready" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # Stage C: log shipper. Alloy uses the Docker socket to discover all
+  # containers in this compose project, scrapes their stdout/stderr, and
+  # ships the lines to Loki labelled by service + container.
+  alloy:
+    image: grafana/alloy:v1.4.2
+    container_name: alloy
+    command:
+      - "run"
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "12345:12345"
+    depends_on:
+      loki:
+        condition: service_healthy
 
   zookeeper:
     build:
@@ -323,6 +363,8 @@ volumes:
   tempo-data:
   prometheus-data:
   grafana-data:
+  loki-data:
+  alloy-data:
   hdfs-name:
   hdfs-data:
   kafka-data:
