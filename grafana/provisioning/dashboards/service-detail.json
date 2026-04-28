@@ -1,0 +1,144 @@
+{
+  "annotations": {"list": []},
+  "description": "Per-service detail. Pick a service from the variable at the top (or click a node in the OTel Lab service map and you'll arrive here pre-filtered).",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "tags": [],
+      "title": "<- Back to service map",
+      "tooltip": "Open the service-map / RED dashboard",
+      "type": "link",
+      "url": "/d/otel-lab-service-map/otel-lab-service-map-red"
+    }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "type": "row", "id": 100, "title": "RED for ${service}",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false, "panels": []
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Rate of all spans where this service is the source.",
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 1},
+      "id": 101,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "sum(rate(traces_spanmetrics_calls_total{service=\"$service\"}[$__rate_interval]))",
+        "refId": "A"
+      }],
+      "title": "Rate", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 1},
+      "id": 102,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "sum(rate(traces_spanmetrics_calls_total{service=\"$service\", status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval]))",
+        "refId": "A"
+      }],
+      "title": "Errors / sec", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 1},
+      "id": 103,
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(traces_spanmetrics_latency_bucket{service=\"$service\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(traces_spanmetrics_latency_bucket{service=\"$service\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "Latency p50 / p99", "type": "timeseries"
+    },
+    {
+      "type": "row", "id": 200, "title": "JVM (from OTel agent)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 8}, "collapsed": false, "panels": []
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 9},
+      "id": 201,
+      "targets": [{
+        "expr": "jvm_memory_used_bytes{service_name=\"$service\", type=\"heap\"} or process_runtime_jvm_memory_usage_bytes{service_name=\"$service\", type=\"heap\"}",
+        "legendFormat": "{{pool}}", "refId": "A"
+      }],
+      "title": "JVM heap used", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "gridPos": {"h": 7, "w": 12, "x": 12, "y": 9},
+      "id": 202,
+      "targets": [{
+        "expr": "rate(jvm_gc_duration_seconds_sum{service_name=\"$service\"}[$__rate_interval]) or rate(process_runtime_jvm_gc_duration_seconds_sum{service_name=\"$service\"}[$__rate_interval])",
+        "legendFormat": "{{gc}}", "refId": "A"
+      }],
+      "title": "GC pause time / sec", "type": "timeseries"
+    },
+    {
+      "type": "row", "id": 300, "title": "JMX (Stage B - if scrape job exists)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 16}, "collapsed": false, "panels": []
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "All JMX-derived metrics scraped from this service. Will be empty for services without a JMX scrape job (producer, consumer).",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 17},
+      "id": 301,
+      "targets": [
+        {"expr": "kafka_server_brokertopic_bytesinpersec{service=\"$service\", stat=\"OneMinuteRate\"}", "legendFormat": "kafka bytes in/s", "refId": "A"},
+        {"expr": "kafka_network_request_requestspersec{service=\"$service\", stat=\"OneMinuteRate\"}", "legendFormat": "kafka {{api}} req/s", "refId": "B"},
+        {"expr": "hbase_regionserver_ipc_numcallsingeneralqueue{service=\"$service\"}", "legendFormat": "RS RPC queue depth", "refId": "C"},
+        {"expr": "hbase_regionserver_regioncount{service=\"$service\"}", "legendFormat": "RS region count", "refId": "D"},
+        {"expr": "hbase_master_numregionservers{service=\"$service\"}", "legendFormat": "master live RS count", "refId": "E"},
+        {"expr": "hadoop_namenode_capacityremaining{service=\"$service\"}", "legendFormat": "HDFS free bytes", "refId": "F"}
+      ],
+      "title": "JMX signals for ${service}", "type": "timeseries"
+    },
+    {
+      "type": "row", "id": 400, "title": "Recent traces",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 25}, "collapsed": false, "panels": []
+    },
+    {
+      "datasource": {"type": "tempo", "uid": "tempo"},
+      "description": "TraceQL search restricted to this service. Click any row to open the trace.",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 26},
+      "id": 401,
+      "targets": [{
+        "datasource": {"type": "tempo", "uid": "tempo"},
+        "queryType": "traceql",
+        "query": "{ resource.service.name = \"$service\" }",
+        "refId": "A"
+      }],
+      "title": "Last traces for ${service}", "type": "table"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "tags": ["otel", "stage-a", "service-detail"],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": "label_values(traces_spanmetrics_calls_total, service)",
+        "refresh": 2,
+        "sort": 1,
+        "current": {"text": "consumer", "value": "consumer"}
+      }
+    ]
+  },
+  "time": {"from": "now-30m", "to": "now"},
+  "title": "OTel Lab — service detail",
+  "uid": "otel-lab-service-detail",
+  "version": 1
+}

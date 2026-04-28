@@ -1,21 +1,47 @@
 {
   "annotations": {"list": []},
-  "description": "Stage A: dependency graph + RED metrics. The Node Graph panel uses Tempo's service-graph metrics from Prometheus; RED panels use span-metrics. JVM panels use the metrics the OTel Java agents emit directly.",
+  "description": "Stage A + dependency graph + per-service drill-down. Click any node in the Node Graph to open the service-detail dashboard pre-filtered to that service.",
   "editable": true,
-  "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "tags": [],
+      "title": "Service detail (per-service drill-down)",
+      "type": "link",
+      "url": "/d/otel-lab-service-detail/otel-lab-service-detail"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "tags": [],
+      "title": "JMX dashboards",
+      "type": "link",
+      "url": "/d/otel-lab-jmx/otel-lab-jmx-kafka-hbase-hdfs"
+    }
+  ],
   "liveNow": true,
   "panels": [
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "Dependency graph derived from observed traffic. Each edge is a (client_service, server_service) pair seen in spans. Hover an edge for rate / errors / p99.",
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 0},
+      "description": "Dependency graph derived from observed traffic. Click any node to drill into the per-service detail dashboard.",
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "id": 1,
       "options": {
         "nodes": {"mainStatUnit": "short"},
         "edges": {"mainStatUnit": "short"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open service detail for ${__data.fields.title}",
+              "url": "/d/otel-lab-service-detail/otel-lab-service-detail?var-service=${__data.fields.title}&${__url_time_range}"
+            }
+          ]
+        }
       },
       "targets": [
         {
@@ -27,95 +53,96 @@
           "refId": "A"
         }
       ],
-      "title": "Service Graph (rate of edges over $__range)",
+      "title": "Service Graph (click a node to drill in)",
       "type": "nodeGraph"
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "Per-service request rate (calls / second).",
       "fieldConfig": {
-        "defaults": {"unit": "reqps", "decimals": 2}
+        "defaults": {
+          "unit": "reqps", "decimals": 2,
+          "links": [
+            {
+              "title": "Open service detail for ${__field.labels.service}",
+              "url": "/d/otel-lab-service-detail/otel-lab-service-detail?var-service=${__field.labels.service}&${__url_time_range}"
+            }
+          ]
+        }
       },
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 12},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 14},
       "id": 2,
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (service) (rate(traces_spanmetrics_calls_total[$__rate_interval]))",
-          "legendFormat": "{{service}}",
-          "refId": "A"
-        }
-      ],
-      "title": "RED — Rate by service",
-      "type": "timeseries"
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "sum by (service) (rate(traces_spanmetrics_calls_total[$__rate_interval]))",
+        "legendFormat": "{{service}}", "refId": "A"
+      }],
+      "title": "RED — Rate by service", "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "Per-service error rate (calls with status_code=STATUS_CODE_ERROR).",
-      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}},
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 12},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps", "decimals": 2,
+          "links": [
+            {
+              "title": "Open service detail for ${__field.labels.service}",
+              "url": "/d/otel-lab-service-detail/otel-lab-service-detail?var-service=${__field.labels.service}&${__url_time_range}"
+            }
+          ]
+        }
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 14},
       "id": 3,
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (service) (rate(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval]))",
-          "legendFormat": "{{service}}",
-          "refId": "A"
-        }
-      ],
-      "title": "RED — Errors by service",
-      "type": "timeseries"
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "sum by (service) (rate(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval]))",
+        "legendFormat": "{{service}}", "refId": "A"
+      }],
+      "title": "RED — Errors by service", "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "p99 span duration per service. Computed from span-metrics histograms.",
-      "fieldConfig": {"defaults": {"unit": "s"}},
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 12},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "links": [
+            {
+              "title": "Open service detail for ${__field.labels.service}",
+              "url": "/d/otel-lab-service-detail/otel-lab-service-detail?var-service=${__field.labels.service}&${__url_time_range}"
+            }
+          ]
+        }
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 14},
       "id": 4,
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.99, sum by (le, service) (rate(traces_spanmetrics_latency_bucket[$__rate_interval])))",
-          "legendFormat": "{{service}} p99",
-          "refId": "A"
-        }
-      ],
-      "title": "RED — p99 latency by service",
-      "type": "timeseries"
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "histogram_quantile(0.99, sum by (le, service) (rate(traces_spanmetrics_latency_bucket[$__rate_interval])))",
+        "legendFormat": "{{service}} p99", "refId": "A"
+      }],
+      "title": "RED — p99 latency by service", "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "JVM heap used per service. Comes from the OTel Java agent, not Tempo.",
       "fieldConfig": {"defaults": {"unit": "bytes"}},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
       "id": 5,
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (service_name) (jvm_memory_used_bytes{type=\"heap\"} or process_runtime_jvm_memory_usage_bytes{type=\"heap\"})",
-          "legendFormat": "{{service_name}}",
-          "refId": "A"
-        }
-      ],
-      "title": "JVM heap used by service",
-      "type": "timeseries"
+      "targets": [{
+        "expr": "sum by (service_name) (jvm_memory_used_bytes{type=\"heap\"} or process_runtime_jvm_memory_usage_bytes{type=\"heap\"})",
+        "legendFormat": "{{service_name}}", "refId": "A"
+      }],
+      "title": "JVM heap used by service", "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "GC pause duration (rate). Spikes here usually correlate with RED p99 spikes.",
       "fieldConfig": {"defaults": {"unit": "s"}},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
       "id": 6,
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (service_name) (rate(jvm_gc_duration_seconds_sum[$__rate_interval]) or rate(process_runtime_jvm_gc_duration_seconds_sum[$__rate_interval]))",
-          "legendFormat": "{{service_name}}",
-          "refId": "A"
-        }
-      ],
-      "title": "JVM GC pause time by service",
-      "type": "timeseries"
+      "targets": [{
+        "expr": "sum by (service_name) (rate(jvm_gc_duration_seconds_sum[$__rate_interval]) or rate(process_runtime_jvm_gc_duration_seconds_sum[$__rate_interval]))",
+        "legendFormat": "{{service_name}}", "refId": "A"
+      }],
+      "title": "JVM GC pause time by service", "type": "timeseries"
     }
   ],
   "refresh": "10s",
@@ -123,9 +150,7 @@
   "tags": ["otel", "stage-a", "service-map", "RED"],
   "templating": {"list": []},
   "time": {"from": "now-15m", "to": "now"},
-  "timepicker": {},
-  "timezone": "",
   "title": "OTel Lab — service map + RED",
   "uid": "otel-lab-service-map",
-  "version": 1
+  "version": 2
 }
