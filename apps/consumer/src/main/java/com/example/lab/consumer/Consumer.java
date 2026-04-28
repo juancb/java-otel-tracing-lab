@@ -39,6 +39,12 @@ import java.util.Properties;
  * <p>Row-key strategy: deviceId + "|" + reverseTs, where reverseTs is
  * Long.MAX_VALUE minus epoch millis. This makes per-device scans return the
  * newest readings first without needing a reverse scan.
+ *
+ * <p>The {@link Chaos#maybe(String)} call before {@code table.put(...)} rolls
+ * the chaos dice so latency / errors can be injected on the write path
+ * independently of producer / query-client. On a chaos error we skip the
+ * batch and don't commit Kafka offsets, so the broker redelivers the
+ * batch on next poll — which exercises the consumer-rebalance path nicely.
  */
 public final class Consumer {
 
@@ -99,8 +105,18 @@ public final class Consumer {
                         }
                     }
                     if (!puts.isEmpty()) {
-                        // Batched put: one HBase RPC per region per batch.
-                        table.put(puts);
+                        // Roll the chaos dice before the put. Sleeping here
+                        // shows up inside the OTel HBase put span; a thrown
+                        // ChaosException skips this batch *and* skips the
+                        // commit below, so Kafka redelivers on next poll.
+                        try {
+                            Chaos.maybe("consumer.put");
+                            // Batched put: one HBase RPC per region per batch.
+                            table.put(puts);
+                        } catch (Chaos.ChaosException ce) {
+                            LOG.warn("Skipping put due to chaos: {} (Kafka will redeliver)", ce.getMessage());
+                            continue;
+                        }
                     }
                     kc.commitSync();
                     if (LOG.isDebugEnabled()) {

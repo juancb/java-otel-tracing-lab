@@ -327,6 +327,12 @@ services:
       retries: 30
       start_period: 30s
 
+  # --- Application chaos hooks ----------------------------------------------
+  # All three Java apps (producer / consumer / query-client) share a probabilistic
+  # chaos utility (see apps/.../Chaos.java). Defaults below are zero so the
+  # apps behave normally. Bump CHAOS_LATENCY_PROB / CHAOS_ERROR_PROB to make
+  # the dashboards light up. The vars live on each service so you can target
+  # the chaos to a specific layer (only producer, only read path, etc).
   producer:
     build:
       context: apps
@@ -340,9 +346,81 @@ services:
       TOPIC: sensor.readings
       RATE_PER_SEC: "5"
       NUM_DEVICES: "50"
+      CHAOS_LATENCY_PROB: "0"
+      CHAOS_LATENCY_MS_MIN: "100"
+      CHAOS_LATENCY_MS_MAX: "500"
+      CHAOS_ERROR_PROB: "0"
     depends_on:
       kafka:
         condition: service_healthy
       otel-collector:
         condition: service_started
-    restart: un
+    restart: unless-stopped
+
+  consumer:
+    build:
+      context: apps
+      dockerfile: consumer/Dockerfile
+    image: otel-lab/consumer:local
+    container_name: consumer
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: consumer
+      BOOTSTRAP_SERVERS: kafka:9092
+      TOPIC: sensor.readings
+      GROUP_ID: sensor-consumer
+      HBASE_ZK_QUORUM: zookeeper
+      HBASE_TABLE: sensor_readings
+      CHAOS_LATENCY_PROB: "0"
+      CHAOS_LATENCY_MS_MIN: "100"
+      CHAOS_LATENCY_MS_MAX: "500"
+      CHAOS_ERROR_PROB: "0"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      hbase-regionserver:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  # --- Read-side traffic generator + chaos hook ------------------------------
+  # Round-robins Scan / Get / Increment-and-read against HBase. Generates
+  # read traces independently of the Kafka write path so Tempo's service
+  # map shows a query-client -> hbase-regionserver edge, and Grafana RED
+  # panels can distinguish read latency from write latency.
+  query-client:
+    build:
+      context: apps
+      dockerfile: query-client/Dockerfile
+    image: otel-lab/query-client:local
+    container_name: query-client
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: query-client
+      HBASE_ZK_QUORUM: zookeeper
+      HBASE_TABLE: sensor_readings
+      COUNTER_TABLE: sensor_counters
+      QUERY_INTERVAL_MS: "2000"
+      SCAN_LIMIT: "20"
+      NUM_DEVICES: "50"
+      CHAOS_LATENCY_PROB: "0"
+      CHAOS_LATENCY_MS_MIN: "100"
+      CHAOS_LATENCY_MS_MAX: "500"
+      CHAOS_ERROR_PROB: "0"
+    depends_on:
+      hbase-regionserver:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  tempo-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  alloy-data:
+  hdfs-name:
+  hdfs-data:
+  kafka-data:

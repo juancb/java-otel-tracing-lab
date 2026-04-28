@@ -4,6 +4,7 @@ WORKDIR /src
 COPY pom.xml /src/pom.xml
 COPY producer/pom.xml /src/producer/pom.xml
 COPY consumer/pom.xml /src/consumer/pom.xml
+COPY query-client/pom.xml /src/query-client/pom.xml
 RUN mvn -B -q -pl consumer -am dependency:go-offline || true
 COPY consumer/src /src/consumer/src
 RUN mvn -B -pl consumer -am package -DskipTests
@@ -25,6 +26,4 @@ ENV OTEL_SERVICE_NAME=consumer \
     OTEL_TRACES_EXPORTER=otlp \
     OTEL_METRICS_EXPORTER=otlp \
     OTEL_LOGS_EXPORTER=otlp \
-    JAVA_TOOL_OPTIONS="-javaagent:/opt/otel/opentelemetry-javaagent.jar"
-
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+    JAVA_TOOL_OPTIONS="-javaagent:/opt/otel/opentelemetry-javaagen

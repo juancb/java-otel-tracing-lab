@@ -38,8 +38,14 @@ cluster on a developer laptop.
 ┌──┴──────┐  ┌────────┐  ┌───────┴───┐  ┌────────────┐  ┌──────────┐  ┌─┴────────┐
 │ producer│─▶│ Kafka  │─▶│ consumer  │─▶│ hbase-     │─▶│ hadoop-  │  │ zoo-     │
 │ (Java)  │  │ (KRaft)│  │ (Java)    │  │ master+rs  │  │ nn+dn    │  │ keeper   │
-└─────────┘  └────────┘  └───────────┘  └────────────┘  └──────────┘  └──────────┘
- javaagent    javaagent    javaagent      javaagent      javaagent     javaagent
+└─────────┘  └────────┘  └───────────┘  └─────▲──────┘  └──────────┘  └──────────┘
+ javaagent    javaagent    javaagent          │          javaagent     javaagent
+                                              │ Scan/Get/Increment
+                                       ┌──────┴──────┐
+                                       │ query-client│
+                                       │   (Java)    │
+                                       └─────────────┘
+                                          javaagent
 ```
 
 ZooKeeper is included for HBase coordination (HBase still requires ZK; only
@@ -117,12 +123,33 @@ itself doesn't produce useful traces.
 JVM auto-instrumentation produces a couple of resource-tagged metric
 batches; nothing useful at the protocol level.
 
-### Producer / Consumer
+### Producer / Consumer / Query-client
 
-Two Maven modules under `apps/`. Each builds a fat JAR via the Maven Shade
-plugin so the Dockerfile can stay trivial: copy the fat JAR, copy the
-agent JAR, set `JAVA_TOOL_OPTIONS=-javaagent:/opt/otel/agent.jar`. The
-agent picks up these environment variables from compose:
+Three Maven modules under `apps/`. Each builds a fat JAR via the Maven
+Shade plugin so the Dockerfile can stay trivial: copy the fat JAR, copy
+the agent JAR, set `JAVA_TOOL_OPTIONS=-javaagent:/opt/otel/agent.jar`.
+
+- **producer**: writes to Kafka. Generates the synthetic telemetry that
+  drives everything downstream.
+- **consumer**: writes to HBase. The Kafka instrumentation propagates
+  W3C trace context via headers, so consumer spans link back to the
+  producer's send.
+- **query-client**: read-side traffic generator. Round-robins Scan / Get
+  / Increment-and-read against HBase to produce read traces independent
+  of the write path. Lets the service map render a `query-client →
+  hbase-regionserver` edge that's distinguishable from the consumer's
+  write edge.
+
+Each module ships a copy of `Chaos.java` in its package — a tiny shared
+utility that, on each invocation, rolls dice for probabilistic latency
+injection (sleep) and error injection (throw `ChaosException`).
+Probabilities and latency bounds come from environment variables
+(`CHAOS_LATENCY_PROB`, `CHAOS_LATENCY_MS_MIN/MAX`, `CHAOS_ERROR_PROB`)
+and default to zero — the chaos hook is inert until you turn it on. The
+sleep happens *first*, so the injected latency lands inside the
+OTel-instrumented span rather than between operations.
+
+The agent picks up these environment variables from compose:
 
 - `OTEL_SERVICE_NAME=producer` (or `consumer`, etc.)
 - `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`
@@ -179,32 +206,4 @@ Tempo to something else (Jaeger, an APM vendor, stdout) by editing one file.
 
 The agent JAR is fetched at image build time from the
 `opentelemetry-java-instrumentation` GitHub releases (pinned via build arg
-in each Dockerfile). It lives at `/opt/otel/opentelemetry-javaagent.jar`
-inside every JVM container.
-
-For our own Java apps we attach it via `JAVA_TOOL_OPTIONS`. For Kafka, HBase,
-Hadoop, and ZooKeeper we attach it via the `*_OPTS` env vars those daemons
-honor on startup. The wiring is declarative and visible in `docker-compose.yml`
-plus the per-service Dockerfile — no shell-script glue.
-
-## Service graph notes
-
-The Stage A Service Graph (Grafana Explore -> Tempo -> Service Graph) splits
-into two disconnected clusters because two different sources of spans don't
-overlap: healthcheck-driven Jetty server spans (top cluster, attributed to a
-synthetic `user` client) and HBase client spans (bottom cluster, dangling
-into a phantom `hbase` node because HBase's built-in tracing hard-codes
-`peer.service=hbase`). [docs/SERVICE_GRAPH.md](SERVICE_GRAPH.md) walks
-through what each piece means and what Stage B will do to merge them.
-
-## Known limitations
-
-- Single-node setup. Replication, region splitting, and cross-broker
-  scenarios won't appear.
-- Kafka broker, ZooKeeper, HBase server, and Hadoop daemon traces are
-  sparse-to-empty for the reasons described in "What auto-instrumentation
-  actually covers" above. The agent loads everywhere, but auto-instrumentation
-  isn't magic — it only emits spans where it has matching modules.
-- The metrics and logs streams flow into the Collector but stop at the
-  debug exporter. To see them in Grafana you'd need to add a
-  Prometheus/Loki backend (or remote-write to whatever you use elsewhere).
+in each Dockerfile). It 

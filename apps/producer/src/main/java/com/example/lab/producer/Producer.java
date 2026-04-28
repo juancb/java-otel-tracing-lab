@@ -25,6 +25,11 @@ import java.util.concurrent.locks.LockSupport;
  * {@code KafkaProducer#send} call automatically, including the W3C Trace
  * Context headers that propagate to the consumer.
  *
+ * <p>The {@link Chaos#maybe(String)} call before each send rolls the chaos
+ * dice so latency / errors can be injected at the producer layer
+ * independently of the consumer / query-client. See {@link Chaos} for env
+ * vars.
+ *
  * <p>Configuration via environment variables (sensible defaults baked in
  * for laptop runs):
  * <ul>
@@ -69,8 +74,6 @@ public final class Producer {
         Random rng = new Random();
 
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
-            // Block until the first attempted send so we crash fast if the
-            // broker DNS / network is wrong.
             long sent = 0;
             while (!Thread.currentThread().isInterrupted()) {
                 String deviceId = String.format("device-%04d", rng.nextInt(numDevices));
@@ -83,6 +86,17 @@ public final class Producer {
 
                 ProducerRecord<String, String> record =
                         new ProducerRecord<>(topic, deviceId, json);
+
+                // Roll the chaos dice before each send. Sleeping here makes
+                // the latency show up inside the OTel-instrumented send span;
+                // a thrown ChaosException skips this iteration entirely.
+                try {
+                    Chaos.maybe("producer.send");
+                } catch (Chaos.ChaosException ce) {
+                    LOG.warn("Skipping send due to chaos: {}", ce.getMessage());
+                    LockSupport.parkNanos(sleepNanos);
+                    continue;
+                }
 
                 producer.send(record, (md, ex) -> {
                     if (ex != null) {

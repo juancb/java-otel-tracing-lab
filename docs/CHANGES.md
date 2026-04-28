@@ -2,6 +2,66 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-28 - Stage E (partial): query-client + in-app chaos
+
+Adds read-side traffic and a probabilistic chaos hook so the dashboards
+and traces can be exercised independently of the steady producer/consumer
+flow. Closes the read/write asymmetry in the service map.
+
+- New `apps/query-client/` Java module. Round-robins three modes per tick
+  (interval = `QUERY_INTERVAL_MS`, default 2s):
+  1. **scan** — Scan latest N rows from `sensor_readings`, capped by
+     `SCAN_LIMIT` (default 20).
+  2. **get** — Prefix scan limited to 1 for a randomly-picked
+     `device-####`, returning the newest reading. Demonstrates point
+     lookup latency and the BlockCache.
+  3. **increment** — atomic Increment on a counter cell on a shared row
+     in `sensor_counters` (table created on first run), then a Get to
+     read it back. Exercises the WAL + memstore path and gives a clean
+     read-after-write span pair in Tempo.
+
+  OTel agent attached at runtime, so each operation shows up as a
+  hbase-client span and its log lines carry the trace_id MDC injected
+  by `logback-mdc-1.0`.
+
+- New shared `Chaos.java` (one copy per module's package — small enough
+  not to warrant a separate Maven module). Two dice per call to
+  `Chaos.maybe(tag)`:
+  1. With probability `CHAOS_LATENCY_PROB`, sleep a uniform-random
+     duration in `[CHAOS_LATENCY_MS_MIN, CHAOS_LATENCY_MS_MAX]`.
+  2. With probability `CHAOS_ERROR_PROB`, throw `ChaosException`.
+  Sleep happens *first* so the latency lands inside the OTel-instrumented
+  span. Errors are caught at the call site:
+  - producer.send → skip the iteration, sleep, continue.
+  - consumer.put → skip the batch *and* skip Kafka commit, so the broker
+    redelivers next poll. Exercises the rebalance path.
+  - query.{scan,get,increment} → log + skip the tick.
+
+  All probabilities default to 0, so the lab is a no-op until you turn
+  chaos on.
+
+- `docker-compose.yml`: new `query-client` service with chaos env vars.
+  Producer + consumer get the same chaos vars (defaulted to 0) so you
+  can target chaos at any single layer.
+
+- `apps/pom.xml`: added `query-client` module. Existing producer +
+  consumer Dockerfiles updated to `COPY query-client/pom.xml` because
+  the parent pom now references it (Maven's reactor wants every module
+  pom on disk even with `-pl`).
+
+How to drive it once it's up:
+  # Make the consumer dashboard light up:
+  docker compose stop consumer
+  CHAOS_LATENCY_PROB=0.2 CHAOS_LATENCY_MS_MAX=800 \
+    docker compose up -d consumer
+  # ...wait 2 minutes, watch p99 climb in service-map dashboard...
+  CHAOS_LATENCY_PROB=0 docker compose up -d consumer
+
+  # Or hit the read path:
+  docker compose stop query-client
+  CHAOS_ERROR_PROB=0.1 docker compose up -d query-client
+  # ...look for ChaosException entries in Loki for service=query-client...
+
 ## 2026-04-28 - Healthcheck and volume fixes (kafka, loki)
 
 Stage C uncovered two boot-ordering bugs that only surfaced after the
@@ -145,56 +205,4 @@ disconnected service graph from Stage A.
 After rebuild and restart you should see:
 - Five new green scrape jobs at http://localhost:9090/targets
 - Per-component panels populating in the new "JMX" dashboard
-- Service Graph in Tempo showing `consumer -> hbase-regionserver`
-  (single connected component, not disjoint anymore) once a few minutes
-  of producer traffic have flowed through
-
-## 2026-04-28 - Stage A verified working + service-graph documentation
-
-The end-to-end pipeline is up: producer -> Kafka -> consumer -> HBase ->
-HDFS, with traces flowing through the Collector and into Tempo. The Stage
-A service graph in Grafana renders, with the expected caveats:
-
-- Two disconnected clusters in the graph: the top cluster
-  (user -> hadoop-namenode/datanode/hbase-master/regionserver) is from
-  Docker healthcheck curl traffic hitting Jetty; the bottom cluster
-  (consumer -> hbase) is from HBase's built-in OTel client-side spans.
-- The bottom cluster's `hbase` is a phantom node because HBase 2.4+ hard-
-  codes `peer.service=hbase` in its tracing, which doesn't match the
-  per-role service.name (`hbase-regionserver`, `hbase-master`).
-- New `docs/SERVICE_GRAPH.md` documents this and explains what Stage B
-  will fix.
-
-Mid-flight fixes that were needed to get here:
-
-- Switched consumer from `hbase-client` to `hbase-shaded-client` to
-  resolve a Hadoop split-classpath NoSuchMethodError on
-  HadoopKerberosName.setRuleMechanism (3.2.4 hadoop-auth vs 3.3.6
-  hadoop-common transitive versions).
-- Removed the otel-collector healthcheck (the contrib image is distroless
-  - no shell/wget/nc), and switched dependents to `condition: service_started`.
-- Moved `out_of_order_time_window` from CLI flag (rejected by Prometheus)
-  into prometheus.yml under `storage.tsdb`.
-
-## 2026-04-28 - Stage A: Prometheus + service-map
-
-Roadmap stage A is in. Tempo's service-graph and span-metrics generators
-finally have somewhere to land, and JVM-agent metrics from Kafka, HBase,
-producer, consumer, etc. are now queryable.
-
-- New `prometheus/prometheus.yml`: no scrape jobs; Prometheus is purely a
-  remote-write target.
-- `docker-compose.yml`: added `prometheus` service (`prom/prometheus:v2.54.1`)
-  with `--web.enable-remote-write-receiver`, exemplar storage, native
-  histograms, and a 30m out-of-order window so Tempo's slightly-delayed
-  metric_generator writes are accepted. Tempo, otel-collector, and grafana
-  all `depends_on: prometheus`.
-- `tempo/tempo.yaml`: `metrics_generator.storage.remote_write` now points at
-  `http://prometheus:9090/api/v1/write` with `send_exemplars: true`.
-- `otel-collector/config.yaml`: added `prometheusremotewrite` exporter; the
-  `metrics` pipeline now fans out to both Prometheus and the debug exporter.
-  Resource attributes (service.name, container, deployment.environment) are
-  promoted to Prometheus labels via `resource_to_telemetry_conversion`.
-- `grafana/provisioning/datasources/prometheus.yaml`: new datasource,
-  exemplar trace-id link to the Tempo datasource.
-- `grafana/provisioning/datasources/tempo.y
+- Service Graph in Tempo sho

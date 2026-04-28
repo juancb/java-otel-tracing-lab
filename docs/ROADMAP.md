@@ -104,6 +104,16 @@ can distinguish "app is slow" from "container is throttled".
 Validation. Without this, you don't know whether the dashboards and alerts
 actually catch real failures.
 
+**Done so far (read-side traffic + in-app chaos):**
+- `apps/query-client/`: round-robins Scan / Get / Increment-and-read against
+  HBase. OTel agent attached so reads show up as their own service in the
+  service map and in RED panels (distinguishable from the consumer's writes).
+- `apps/.../Chaos.java` shared utility wired into producer, consumer, and
+  query-client. Per-operation probabilistic latency / errors via
+  `CHAOS_LATENCY_PROB`, `CHAOS_LATENCY_MS_MIN/MAX`, `CHAOS_ERROR_PROB`.
+  Defaults to 0 (off) so flipping it on is purely a deploy-time concern.
+
+**Still TODO:**
 - Add `httpcheckreceiver` for /ready endpoints (tempo, grafana, namenode UI,
   hbase-master UI) and `tcpcheckreceiver` for kafka:9092 and zookeeper:2181.
 - Write `docs/RUNBOOK.md`: 3-4 deliberately-broken scenarios with expected
@@ -111,19 +121,4 @@ actually catch real failures.
   - `docker compose stop hbase-regionserver` — what fires?
   - `docker compose run --cpus=0.1 consumer` — does latency alert fire?
   - Pause GC on the producer (`-XX:+UseSerialGC -Xmx32m`) — does heap alert
-    catch it before user-visible latency?
-  - Block port between consumer and ZK with iptables — what dashboard
-    surfaces the symptom first?
-
-**What this buys you:** confidence that the observability stack pays off.
-
-**Depends on:** Stage D.
-
-## Out of scope (intentionally)
-
-- A real metrics-long-term-storage backend (Mimir, Thanos). For a laptop
-  lab Prometheus's local TSDB is fine.
-- Multi-tenancy in any of the data stores.
-- TLS / auth between any of the components. This is a sandbox.
-- Production-grade Kafka or HBase tuning. This lab is about *seeing* the
-  system, not running it well.
+    catch it before u
