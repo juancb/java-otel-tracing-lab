@@ -1,0 +1,48 @@
+# JMX → Prometheus exporter rules for HBase Master and RegionServer.
+# HBase exposes metrics under Hadoop:service=HBase,name=...
+
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+rules:
+  # --- Master cluster metrics (master only) ------------------------------
+  - pattern: Hadoop<service=HBase, name=Master, sub=Server><>(numRegionServers|numDeadRegionServers|clusterRequests|averageLoad)
+    name: hbase_master_$1
+    type: GAUGE
+
+  # --- RegionServer Server metrics ---------------------------------------
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=Server><>(regionCount|storeCount|storeFileCount|storeFileSize|memStoreSize|hlogFileCount|totalRequestCount|readRequestCount|writeRequestCount)
+    name: hbase_regionserver_$1
+    type: GAUGE
+
+  # --- IPC (RPC handler queue, processing time) --------------------------
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=IPC><>(numActiveHandler|numCallsInGeneralQueue|numCallsInPriorityQueue|queueSize|processCallTime_mean|processCallTime_99th_percentile|queueCallTime_mean|queueCallTime_99th_percentile)
+    name: hbase_regionserver_ipc_$1
+    type: GAUGE
+
+  - pattern: Hadoop<service=HBase, name=Master, sub=IPC><>(numActiveHandler|numCallsInGeneralQueue|queueSize|processCallTime_mean|processCallTime_99th_percentile)
+    name: hbase_master_ipc_$1
+    type: GAUGE
+
+  # --- WAL append metrics (RegionServer) ---------------------------------
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=WAL><>(appendCount|appendTime_mean|appendTime_99th_percentile|syncTime_mean|syncTime_99th_percentile)
+    name: hbase_regionserver_wal_$1
+    type: GAUGE
+
+  # --- JVM ----------------------------------------------------------------
+  - pattern: java.lang<type=Memory><(\w+)Memory>Used
+    name: jvm_memory_used_bytes
+    labels:
+      pool: "$1"
+    type: GAUGE
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionCount
+    name: jvm_gc_collections_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionTime
+    name: jvm_gc_collection_seconds_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+    valueFactor: 0.001

@@ -1,0 +1,48 @@
+# JMX → Prometheus exporter rules for HDFS NameNode and DataNode.
+
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+rules:
+  # --- NameNode FS state -------------------------------------------------
+  - pattern: Hadoop<service=NameNode, name=FSNamesystem><>(BlocksTotal|FilesTotal|CapacityTotal|CapacityUsed|CapacityRemaining|MissingBlocks|UnderReplicatedBlocks|CorruptBlocks)
+    name: hadoop_namenode_$1
+    type: GAUGE
+
+  # --- NameNode info -----------------------------------------------------
+  - pattern: Hadoop<service=NameNode, name=NameNodeInfo><>(Threads|FreeHeapMemory|MaxHeapMemory)
+    name: hadoop_namenode_info_$1
+    type: GAUGE
+
+  # --- RPC processing time / queue (both NN and DN) ----------------------
+  - pattern: Hadoop<service=(\w+), name=RpcActivityForPort(\d+)><>(RpcQueueTimeAvgTime|RpcProcessingTimeAvgTime|RpcQueueTimeNumOps|RpcProcessingTimeNumOps|NumOpenConnections|CallQueueLength)
+    name: hadoop_rpc_$3
+    labels:
+      service: "$1"
+      port: "$2"
+    type: GAUGE
+
+  # --- DataNode block ops -------------------------------------------------
+  - pattern: Hadoop<service=DataNode, name=DataNodeActivity-(.*?)><>(BlocksRead|BlocksWritten|BlocksReplicated|BytesRead|BytesWritten|ReadsFromLocalClient|ReadsFromRemoteClient|WritesFromLocalClient|WritesFromRemoteClient)
+    name: hadoop_datanode_$2
+    labels:
+      datanode: "$1"
+    type: GAUGE
+
+  # --- JVM ----------------------------------------------------------------
+  - pattern: java.lang<type=Memory><(\w+)Memory>Used
+    name: jvm_memory_used_bytes
+    labels:
+      pool: "$1"
+    type: GAUGE
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionCount
+    name: jvm_gc_collections_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionTime
+    name: jvm_gc_collection_seconds_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+    valueFactor: 0.001

@@ -1,0 +1,188 @@
+{
+  "annotations": {"list": []},
+  "description": "Stage B: JMX-derived per-component dashboards. Kafka broker (request rate, handler queue idle), HBase RegionServer (RPC queue, region count, WAL append), HDFS NameNode (capacity, RPC processing time).",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "type": "row", "id": 100, "title": "Kafka broker",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false, "panels": []
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Request rate by API key (Produce / Fetch / Metadata / etc).",
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 1},
+      "id": 101,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "kafka_network_request_requestspersec{stat=\"OneMinuteRate\"}",
+        "legendFormat": "{{api}}", "refId": "A"
+      }],
+      "title": "Kafka requests/sec by API",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Idle fraction of the request handler thread pool. 1.0 = idle, sustained < 0.3 = saturated. The canonical 'broker is backed up' metric.",
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 1},
+      "id": 102,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "kafka_server_request_handler_avg_idle_percent{stat=\"OneMinuteRate\"}",
+        "legendFormat": "idle pct", "refId": "A"
+      }],
+      "title": "Kafka request-handler avg idle",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Under-replicated partitions. Should be 0. > 0 means a replica is lagging or down.",
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 9},
+      "id": 103,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "kafka_server_replica_underreplicatedpartitions{stat=\"Value\"}",
+        "legendFormat": "URP", "refId": "A"
+      }],
+      "title": "Kafka under-replicated partitions",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Bytes in/out per second across all topics on the broker.",
+      "fieldConfig": {"defaults": {"unit": "Bps"}},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 9},
+      "id": 104,
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "kafka_server_brokertopic_bytesinpersec{stat=\"OneMinuteRate\"}",
+         "legendFormat": "in", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "kafka_server_brokertopic_bytesoutpersec{stat=\"OneMinuteRate\"}",
+         "legendFormat": "out", "refId": "B"}
+      ],
+      "title": "Kafka bytes in / out",
+      "type": "timeseries"
+    },
+    {
+      "type": "row", "id": 200, "title": "HBase RegionServer",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15}, "collapsed": false, "panels": []
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Number of regions hosted on the RegionServer. Sudden drops mean regions moving / going offline.",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 16},
+      "id": 201,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "hbase_regionserver_regioncount", "legendFormat": "regions", "refId": "A"
+      }],
+      "title": "HBase regions on RS",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Number of pending RPC calls in the queue. Climbing = RegionServer can't keep up with incoming traffic. Combined with low handler-idle, that's a saturation signal.",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 16},
+      "id": 202,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "hbase_regionserver_ipc_numcallsingeneralqueue", "legendFormat": "general queue", "refId": "A"
+      }],
+      "title": "HBase RS RPC queue depth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "p99 latency of the RegionServer's RPC processing. Includes Put/Get/Scan handling time.",
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 16},
+      "id": 203,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "hbase_regionserver_ipc_processcalltime_99th_percentile", "legendFormat": "p99 (ms)", "refId": "A"
+      }],
+      "title": "HBase RS RPC p99 process time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "WAL append count and p99 sync time. Sync time is bounded by HDFS DataNode latency on the same write path.",
+      "fieldConfig": {"defaults": {}},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 22},
+      "id": 204,
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "rate(hbase_regionserver_wal_appendcount[1m])", "legendFormat": "appends/sec", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "hbase_regionserver_wal_synctime_99th_percentile", "legendFormat": "sync p99 (ms)", "refId": "B"}
+      ],
+      "title": "HBase RS WAL appends + sync p99",
+      "type": "timeseries"
+    },
+    {
+      "type": "row", "id": 300, "title": "HDFS NameNode + DataNode",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30}, "collapsed": false, "panels": []
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "HDFS capacity used vs total. Watch the gap.",
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "id": 301,
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "hadoop_namenode_capacitytotal", "legendFormat": "total", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "hadoop_namenode_capacityused", "legendFormat": "used", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "hadoop_namenode_capacityremaining", "legendFormat": "free", "refId": "C"}
+      ],
+      "title": "HDFS capacity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Average RPC processing time across NN/DN ports. Spikes here usually correlate with HBase WAL sync spikes.",
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "id": 302,
+      "targets": [{
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "expr": "hadoop_rpc_rpcprocessingtimeavgtime",
+        "legendFormat": "{{service}}/{{port}}", "refId": "A"
+      }],
+      "title": "Hadoop RPC processing time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Block-level activity on each DataNode. Rates per second.",
+      "fieldConfig": {"defaults": {"unit": "Bps"}},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 39},
+      "id": 303,
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "rate(hadoop_datanode_byteswritten[1m])", "legendFormat": "{{datanode}} bytes written", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"},
+         "expr": "rate(hadoop_datanode_bytesread[1m])", "legendFormat": "{{datanode}} bytes read", "refId": "B"}
+      ],
+      "title": "DataNode block IO",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "tags": ["otel", "stage-b", "jmx", "kafka", "hbase", "hadoop"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "title": "OTel Lab — JMX (Kafka, HBase, HDFS)",
+  "uid": "otel-lab-jmx",
+  "version": 1
+}

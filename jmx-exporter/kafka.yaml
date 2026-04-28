@@ -1,0 +1,71 @@
+# JMX → Prometheus exporter rules for Apache Kafka brokers.
+# Captures the metrics you'd reach for first when debugging a slow broker:
+# request rate by API key, request handler queue, network processor avg
+# idle, replica fetcher lag, log flush stats, JVM basics.
+
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+rules:
+  # --- Per-API request metrics -------------------------------------------
+  # kafka.network:type=RequestMetrics,name=...,request=Produce|Fetch|...
+  - pattern: kafka.network<type=RequestMetrics, name=(\w+), request=(\w+)><>(Count|OneMinuteRate|MeanRate|Mean|50thPercentile|99thPercentile)
+    name: kafka_network_request_$1
+    labels:
+      api: "$2"
+      stat: "$3"
+    type: GAUGE
+
+  # --- Broker-level topic metrics (rolled up across topics) --------------
+  - pattern: kafka.server<type=BrokerTopicMetrics, name=(\w+)><>(Count|OneMinuteRate|FiveMinuteRate)
+    name: kafka_server_brokertopic_$1
+    labels:
+      stat: "$2"
+    type: GAUGE
+
+  # --- Per-topic metrics --------------------------------------------------
+  - pattern: kafka.server<type=BrokerTopicMetrics, name=(\w+), topic=([^>]+)><>(Count|OneMinuteRate)
+    name: kafka_server_topic_$1
+    labels:
+      topic: "$2"
+      stat: "$3"
+    type: GAUGE
+
+  # --- Replica manager / under-replicated partitions ----------------------
+  - pattern: kafka.server<type=ReplicaManager, name=(\w+)><>(Value|OneMinuteRate)
+    name: kafka_server_replica_$1
+    labels:
+      stat: "$2"
+    type: GAUGE
+
+  # --- Request handler average idle percent (the canonical "broker is
+  # backed up" signal). 1.0 = 100% idle, < 0.3 = saturated.
+  - pattern: kafka.server<type=KafkaRequestHandlerPool, name=RequestHandlerAvgIdlePercent><>(OneMinuteRate|MeanRate)
+    name: kafka_server_request_handler_avg_idle_percent
+    labels:
+      stat: "$1"
+    type: GAUGE
+
+  # --- KRaft controller metrics ------------------------------------------
+  - pattern: kafka.controller<type=KafkaController, name=(\w+)><>Value
+    name: kafka_controller_$1
+    type: GAUGE
+
+  # --- JVM (already covered by the OTel agent's metrics, but the JMX
+  # exporter version is more granular for things like memory pool sizes)
+  - pattern: java.lang<type=Memory><(\w+)Memory>Used
+    name: jvm_memory_used_bytes
+    labels:
+      pool: "$1"
+    type: GAUGE
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionCount
+    name: jvm_gc_collections_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionTime
+    name: jvm_gc_collection_seconds_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+    valueFactor: 0.001

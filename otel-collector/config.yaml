@@ -1,10 +1,9 @@
 # OpenTelemetry Collector pipeline.
 #
-# Receives OTLP from every JVM in the lab on both gRPC and HTTP, then fans out:
-#
-#   traces  -> tempo (OTLP)         + debug (stdout)
-#   metrics -> prometheus (remote_write) + debug
-#   logs    -> debug (no logs backend in Stage A; Stage C will add Loki)
+# Stage B addition: a `transform/peer_service` processor that rewrites
+# `peer.service=hbase` to `hbase-regionserver` on client spans, so the
+# Stage A service graph collapses the disjoint `consumer -> hbase` edge
+# into a connected component reaching `hbase-regionserver`.
 
 receivers:
   otlp:
@@ -26,6 +25,21 @@ processors:
         value: local-otel-lab
         action: upsert
 
+  # Stage B: HBase 2.5+ ships its own OTel client-side instrumentation that
+  # hard-codes peer.service="hbase" - which doesn't match any actual
+  # service.name in the lab. Tempo's service-graph generator uses
+  # peer.service for the destination node, so we end up with a phantom
+  # "hbase" node disconnected from hbase-master / hbase-regionserver.
+  # Rewrite client-side spans whose peer.service is the literal "hbase" to
+  # the role we actually expect (regionserver, since it serves the data
+  # path).
+  transform/peer_service:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["peer.service"], "hbase-regionserver") where attributes["peer.service"] == "hbase"
+
   batch:
     send_batch_size: 1024
     timeout: 5s
@@ -35,19 +49,12 @@ exporters:
     endpoint: tempo:4317
     tls:
       insecure: true
-
-  # Forwards every metric the JVM agents emit to Prometheus's remote_write
-  # endpoint. Tempo also writes service-graph + span-metrics directly to
-  # Prometheus on its own; the two streams coexist.
   prometheusremotewrite:
     endpoint: http://prometheus:9090/api/v1/write
     tls:
       insecure: true
-    # Promote OTel resource attributes to Prometheus labels so we can filter
-    # by service.name, container, etc. in PromQL.
     resource_to_telemetry_conversion:
       enabled: true
-
   debug:
     verbosity: basic
 
@@ -65,14 +72,12 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource/lab, batch]
+      processors: [memory_limiter, resource/lab, transform/peer_service, batch]
       exporters: [otlp/tempo, debug]
-
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, resource/lab, batch]
       exporters: [prometheusremotewrite, debug]
-
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource/lab, batch]

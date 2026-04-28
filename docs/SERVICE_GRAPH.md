@@ -37,7 +37,24 @@ it) doesn't show up here because Hadoop IPC isn't auto-instrumented well by
 the OTel Java agent. We'll surface that path through JMX in Stage B
 instead.
 
-### Bottom cluster: `consumer -> hbase` (often red)
+### Bottom cluster: `consumer -> hbase` (Stage A) -> `consumer -> hbase-regionserver` (Stage B)
+
+**Stage B note:** the OTel Collector now runs a `transform/peer_service`
+processor that rewrites `peer.service=hbase` to `hbase-regionserver` on
+client spans. After Stage B is deployed and a few minutes of traffic have
+flowed, the bottom cluster collapses onto the real `hbase-regionserver`
+node and the graph becomes one connected component:
+
+```
+user (healthchecks) -> namenode/datanode/hbase-master/hbase-regionserver
+consumer -> hbase-regionserver  (joined!)
+```
+
+If you still see a phantom `hbase` node, your traces from before the
+Collector restart are still in Tempo's window; wait it out or refresh
+the Prometheus TSDB.
+
+### Original Stage A behavior (kept for context)
 
 This edge is the actual data write path: producer puts a record on Kafka,
 consumer reads it, consumer writes a Put to HBase.

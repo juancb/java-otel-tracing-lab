@@ -1,13 +1,16 @@
 # End-to-end docker-compose for the Kafka -> HBase OTel tracing lab.
 #
-# Topology (left to right in the data flow):
-#   producer -> kafka -> consumer -> hbase-master + hbase-regionserver -> namenode + datanode
-#                                                  +-> zookeeper (HBase coordination)
+# Stage A wired Prometheus into the picture. Stage B attaches a
+# jmx_prometheus_javaagent to every JVM and exposes its scrape port:
 #
-# Every JVM container has the OpenTelemetry Java agent attached and points at
-# `otel-collector`. The collector forwards traces to Tempo (OTLP) and metrics
-# to Prometheus (remote_write). Tempo also remote_writes its own derived
-# service-graph + span-metrics into the same Prometheus. Grafana queries both.
+#   kafka              :7071
+#   hbase-master       :7072
+#   hbase-regionserver :7073
+#   hadoop-namenode    :7074
+#   hadoop-datanode    :7075
+#
+# The JMX exporter YAML configs live under jmx-exporter/ and are bind-mounted
+# into each container at /etc/jmx-exporter/.
 
 name: otel-lab
 
@@ -23,6 +26,10 @@ x-hadoop-hbase-build: &hadoop-hbase-build
   build:
     context: docker/hadoop-hbase
   image: otel-lab/hadoop-hbase:local
+
+# JMX-exporter YAML mount, applied to every Hadoop/HBase role.
+x-jmx-mount: &jmx-mount
+  - ./jmx-exporter:/etc/jmx-exporter:ro
 
 services:
   # --- Observability stack ---------------------------------------------------
@@ -44,7 +51,6 @@ services:
       timeout: 3s
       retries: 20
 
-  # NOTE: no healthcheck on otel-collector. The contrib image is distroless.
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.110.0
     container_name: otel-collector
@@ -62,10 +68,6 @@ services:
       prometheus:
         condition: service_started
 
-  # Stage A: metrics store. Receives remote_write from both Tempo
-  # (service-graph + span-metrics) and the OTel Collector (everything the
-  # Java agents emit). No scrape_configs; --web.enable-remote-write-receiver
-  # opens /api/v1/write. Exemplar storage so Grafana can jump trace<->metric.
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: prometheus
@@ -136,11 +138,13 @@ services:
     environment:
       <<: *otel-env
       OTEL_SERVICE_NAME: hadoop-namenode
+    volumes:
+      - hdfs-name:/data/dfs/name
+      - ./jmx-exporter:/etc/jmx-exporter:ro
     ports:
       - "9870:9870"
       - "8020:8020"
-    volumes:
-      - hdfs-name:/data/dfs/name
+      - "7074:7074"   # JMX -> Prometheus
     depends_on:
       otel-collector:
         condition: service_started
@@ -160,6 +164,9 @@ services:
       OTEL_SERVICE_NAME: hadoop-datanode
     volumes:
       - hdfs-data:/data/dfs/data
+      - ./jmx-exporter:/etc/jmx-exporter:ro
+    ports:
+      - "7075:7075"
     depends_on:
       namenode:
         condition: service_healthy
@@ -178,9 +185,12 @@ services:
     environment:
       <<: *otel-env
       OTEL_SERVICE_NAME: hbase-master
+    volumes:
+      - ./jmx-exporter:/etc/jmx-exporter:ro
     ports:
       - "16000:16000"
       - "16010:16010"
+      - "7072:7072"
     depends_on:
       datanode:
         condition: service_healthy
@@ -200,8 +210,11 @@ services:
     environment:
       <<: *otel-env
       OTEL_SERVICE_NAME: hbase-regionserver
+    volumes:
+      - ./jmx-exporter:/etc/jmx-exporter:ro
     ports:
       - "16030:16030"
+      - "7073:7073"
     depends_on:
       hbase-master:
         condition: service_healthy
@@ -235,12 +248,15 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_DIRS: "/var/lib/kafka/data"
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
-      KAFKA_OPTS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar"
+      # Both javaagents chained, plus JMX exporter pointed at kafka.yaml.
+      KAFKA_OPTS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar -javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7071:/etc/jmx-exporter/kafka.yaml"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - ./jmx-exporter:/etc/jmx-exporter:ro
     ports:
       - "9092:9092"
       - "29092:29092"
-    volumes:
-      - kafka-data:/var/lib/kafka/data
+      - "7071:7071"
     depends_on:
       otel-collector:
         condition: service_started

@@ -2,6 +2,49 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-28 - Stage B: JMX scrapers + service-graph join
+
+Adds the metrics that the Java agent's auto-instrumentation can't produce
+on its own: server-side broker, RegionServer, NameNode, DataNode internal
+metrics. Plus the Collector-level rewrite that finally joins the
+disconnected service graph from Stage A.
+
+- `jmx-exporter/`: three YAML rule sets (kafka, hbase, hadoop) for the
+  jmx_prometheus_javaagent. Capture request rates, queue depths, JVM, and
+  HBase WAL/region activity with tidy Prometheus naming.
+- Both Dockerfiles (`docker/hadoop-hbase`, `docker/kafka`) bake in
+  `jmx_prometheus_javaagent-1.0.1.jar` at `/opt/jmx-exporter/`. The
+  agent JAR sits next to the OTel agent; both attach as separate
+  `-javaagent:` flags.
+- `docker/hadoop-hbase/entrypoint.sh`: each role chains both javaagents,
+  with role-specific JMX exporter port + config:
+  - hbase-master       :7072 -> hbase.yaml
+  - hbase-regionserver :7073 -> hbase.yaml
+  - hadoop-namenode    :7074 -> hadoop.yaml
+  - hadoop-datanode    :7075 -> hadoop.yaml
+- Kafka's `KAFKA_OPTS` chains both agents; JMX exporter on :7071 ->
+  kafka.yaml. compose exposes the host-side port.
+- `prometheus/prometheus.yml`: five new `scrape_configs` (kafka,
+  hbase-master, hbase-regionserver, hadoop-namenode, hadoop-datanode).
+- `otel-collector/config.yaml`: new `transform/peer_service` processor on
+  the traces pipeline. Rewrites HBase 2.5+'s hard-coded
+  `peer.service=hbase` to `hbase-regionserver`, which collapses the
+  disjoint `consumer -> hbase` cluster in the service graph onto the
+  real `hbase-regionserver` node.
+- `grafana/provisioning/dashboards/jmx-services.json`: new dashboard with
+  rows for Kafka broker, HBase RegionServer, HDFS NN/DN.
+- New host ports: 7071-7075 (JMX exporter scrape ports, also reachable
+  by Prometheus from inside the lab network on the same numbers).
+- `docs/DEV_NOTES.md`: written-down workflow for the NTFS lockfile +
+  Write-truncation quirks so future sessions don't re-discover them.
+
+After rebuild and restart you should see:
+- Five new green scrape jobs at http://localhost:9090/targets
+- Per-component panels populating in the new "JMX" dashboard
+- Service Graph in Tempo showing `consumer -> hbase-regionserver`
+  (single connected component, not disjoint anymore) once a few minutes
+  of producer traffic have flowed through
+
 ## 2026-04-28 - Stage A verified working + service-graph documentation
 
 The end-to-end pipeline is up: producer -> Kafka -> consumer -> HBase ->
