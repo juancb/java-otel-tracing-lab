@@ -60,18 +60,7 @@
     <value>false</value>
   </property>
 
-  <!--
-    KEY FIX: HBase 2.5.x's default AsyncFSWAL provider uses reflection into
-    Hadoop HDFS internals that were tested against Hadoop 3.2.x. Hadoop 3.3.x
-    shifted some Netty/protobuf class structure, breaking the reflection with
-    `java.lang.IllegalArgumentException: object is not an instance of declaring class`
-    in ProtobufDecoder.<init> -> FanOutOneBlockAsyncDFSOutputHelper.processWriteBlockResponse.
-    The master can't open its WAL, so it never finishes init, RegionServer
-    never registers, deadlock.
-
-    Switching to the synchronous `filesystem` WAL provider avoids the
-    reflection path entirely. Slower per write, but works against any Hadoop.
-  -->
+  <!-- HBase 2.5.x AsyncFSWAL <-> Hadoop 3.3.x reflection bug: use sync WAL. -->
   <property>
     <name>hbase.wal.provider</name>
     <value>filesystem</value>
@@ -79,5 +68,15 @@
   <property>
     <name>hbase.wal.meta_provider</name>
     <value>filesystem</value>
+  </property>
+
+  <!--
+    HBase's internal OTel tracing (master <-> RS, RS <-> ZK, RS <-> HDFS)
+    is sampled by hbase.trace.sampler.fraction (default 0.0 = drop all).
+    Set to 1.0 in this lab so every internal RPC produces a span.
+  -->
+  <property>
+    <name>hbase.trace.sampler.fraction</name>
+    <value>1.0</value>
   </property>
 </configuration>

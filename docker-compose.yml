@@ -21,6 +21,8 @@ x-otel-env: &otel-env
   OTEL_METRICS_EXPORTER: otlp
   OTEL_LOGS_EXPORTER: otlp
   OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local-otel-lab
+  # Stage B+: 100% sampling on every JVM (lab only - production should sample).
+  OTEL_TRACES_SAMPLER: always_on
 
 x-hadoop-hbase-build: &hadoop-hbase-build
   build:
