@@ -91,6 +91,8 @@ You should see metric/log batches tagged with that resource attribute.
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — design and component breakdown
 - [docs/CHANGES.md](docs/CHANGES.md) — chronological change log
+- [docs/ROADMAP.md](docs/ROADMAP.md) — five-stage observability extension plan
+- [docs/SERVICE_GRAPH.md](docs/SERVICE_GRAPH.md) - reading the Stage A service graph
 
 ## Directory layout
 

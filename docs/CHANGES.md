@@ -2,6 +2,33 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-28 - Stage A verified working + service-graph documentation
+
+The end-to-end pipeline is up: producer -> Kafka -> consumer -> HBase ->
+HDFS, with traces flowing through the Collector and into Tempo. The Stage
+A service graph in Grafana renders, with the expected caveats:
+
+- Two disconnected clusters in the graph: the top cluster
+  (user -> hadoop-namenode/datanode/hbase-master/regionserver) is from
+  Docker healthcheck curl traffic hitting Jetty; the bottom cluster
+  (consumer -> hbase) is from HBase's built-in OTel client-side spans.
+- The bottom cluster's `hbase` is a phantom node because HBase 2.4+ hard-
+  codes `peer.service=hbase` in its tracing, which doesn't match the
+  per-role service.name (`hbase-regionserver`, `hbase-master`).
+- New `docs/SERVICE_GRAPH.md` documents this and explains what Stage B
+  will fix.
+
+Mid-flight fixes that were needed to get here:
+
+- Switched consumer from `hbase-client` to `hbase-shaded-client` to
+  resolve a Hadoop split-classpath NoSuchMethodError on
+  HadoopKerberosName.setRuleMechanism (3.2.4 hadoop-auth vs 3.3.6
+  hadoop-common transitive versions).
+- Removed the otel-collector healthcheck (the contrib image is distroless
+  - no shell/wget/nc), and switched dependents to `condition: service_started`.
+- Moved `out_of_order_time_window` from CLI flag (rejected by Prometheus)
+  into prometheus.yml under `storage.tsdb`.
+
 ## 2026-04-28 - Stage A: Prometheus + service-map
 
 Roadmap stage A is in. Tempo's service-graph and span-metrics generators

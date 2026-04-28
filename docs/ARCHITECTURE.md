@@ -187,6 +187,16 @@ Hadoop, and ZooKeeper we attach it via the `*_OPTS` env vars those daemons
 honor on startup. The wiring is declarative and visible in `docker-compose.yml`
 plus the per-service Dockerfile — no shell-script glue.
 
+## Service graph notes
+
+The Stage A Service Graph (Grafana Explore -> Tempo -> Service Graph) splits
+into two disconnected clusters because two different sources of spans don't
+overlap: healthcheck-driven Jetty server spans (top cluster, attributed to a
+synthetic `user` client) and HBase client spans (bottom cluster, dangling
+into a phantom `hbase` node because HBase's built-in tracing hard-codes
+`peer.service=hbase`). [docs/SERVICE_GRAPH.md](SERVICE_GRAPH.md) walks
+through what each piece means and what Stage B will do to merge them.
+
 ## Known limitations
 
 - Single-node setup. Replication, region splitting, and cross-broker
