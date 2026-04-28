@@ -1,5 +1,7 @@
 {
-  "annotations": {"list": []},
+  "annotations": {
+    "list": []
+  },
   "description": "Stage A + dependency graph + per-service drill-down. Click any node in the Node Graph to open the service-detail dashboard pre-filtered to that service.",
   "editable": true,
   "graphTooltip": 1,
@@ -25,13 +27,97 @@
   "liveNow": true,
   "panels": [
     {
-      "datasource": {"type": "tempo", "uid": "tempo"},
+      "id": 100,
+      "type": "stat",
+      "title": "Drill into selected service \u2193",
+      "description": "The Node Graph below is rendered from Tempo's serviceMap query, which in Grafana 11 overrides custom node click links with Tempo's built-in 'Open in Explore' actions. Use the Service dropdown above + this panel as a guaranteed drill-in path. Click anywhere on this panel to open the per-service detail dashboard.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "unit": "reqps",
+          "displayName": "${service}  \u2192  click to open detail",
+          "links": [
+            {
+              "title": "Open service-detail dashboard for ${service}",
+              "url": "/d/otel-lab-service-detail/otel-lab-service-detail?var-service=${service}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(traces_spanmetrics_calls_total{service=\"$service\"}[$__rate_interval]))",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "text",
+      "title": "How to drill in",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Pick a service** from the dropdown above, then click the blue panel \u2190.\n\n- **Per-service detail**: [/d/otel-lab-service-detail?var-service=${service}](/d/otel-lab-service-detail/otel-lab-service-detail?var-service=${service})\n- **Logs for ${service}**: [open in Loki Explore](/explore?left=%7B%22datasource%22:%22loki%22,%22queries%22:%5B%7B%22expr%22:%22%7Bservice%3D%5C%22${service}%5C%22%7D%22%7D%5D%7D)\n- **JMX dashboards**: [/d/otel-lab-jmx](/d/otel-lab-jmx/otel-lab-jmx-kafka-hbase-hdfs)\n\n*Tempo's serviceMap menu (right side of the Node Graph) gives you Tempo-native drill-ins: Request rate, Histogram, Failed rate, View traces.*"
+      }
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
       "description": "Dependency graph derived from observed traffic. Tempo's serviceMap query returns the right node/edge schema for the Node Graph panel. Click any node to drill into the per-service detail dashboard.",
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 3
+      },
       "id": 1,
       "options": {
-        "nodes": {"mainStatUnit": "short"},
-        "edges": {"mainStatUnit": "short"}
+        "nodes": {
+          "mainStatUnit": "short"
+        },
+        "edges": {
+          "mainStatUnit": "short"
+        }
       },
       "fieldConfig": {
         "defaults": {
@@ -45,7 +131,10 @@
       },
       "targets": [
         {
-          "datasource": {"type": "tempo", "uid": "tempo"},
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
           "queryType": "serviceMap",
           "refId": "A"
         }
@@ -54,10 +143,14 @@
       "type": "nodeGraph"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps", "decimals": 2,
+          "unit": "reqps",
+          "decimals": 2,
           "links": [
             {
               "title": "Open service detail for ${__field.labels.service}",
@@ -66,20 +159,36 @@
           ]
         }
       },
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 14},
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
       "id": 2,
-      "targets": [{
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "expr": "sum by (service) (rate(traces_spanmetrics_calls_total[$__rate_interval]))",
-        "legendFormat": "{{service}}", "refId": "A"
-      }],
-      "title": "RED — Rate by service", "type": "timeseries"
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service) (rate(traces_spanmetrics_calls_total[$__rate_interval]))",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "title": "RED \u2014 Rate by service",
+      "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps", "decimals": 2,
+          "unit": "reqps",
+          "decimals": 2,
           "links": [
             {
               "title": "Open service detail for ${__field.labels.service}",
@@ -88,17 +197,32 @@
           ]
         }
       },
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 14},
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 17
+      },
       "id": 3,
-      "targets": [{
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "expr": "sum by (service) (rate(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval]))",
-        "legendFormat": "{{service}}", "refId": "A"
-      }],
-      "title": "RED — Errors by service", "type": "timeseries"
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service) (rate(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval]))",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "title": "RED \u2014 Errors by service",
+      "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
@@ -110,44 +234,124 @@
           ]
         }
       },
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 14},
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
       "id": 4,
-      "targets": [{
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "expr": "histogram_quantile(0.99, sum by (le, service) (rate(traces_spanmetrics_latency_bucket[$__rate_interval])))",
-        "legendFormat": "{{service}} p99", "refId": "A"
-      }],
-      "title": "RED — p99 latency by service", "type": "timeseries"
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, service) (rate(traces_spanmetrics_latency_bucket[$__rate_interval])))",
+          "legendFormat": "{{service}} p99",
+          "refId": "A"
+        }
+      ],
+      "title": "RED \u2014 p99 latency by service",
+      "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"unit": "bytes"}},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
       "id": 5,
-      "targets": [{
-        "expr": "sum by (service_name) (jvm_memory_used_bytes{type=\"heap\"} or process_runtime_jvm_memory_usage_bytes{type=\"heap\"})",
-        "legendFormat": "{{service_name}}", "refId": "A"
-      }],
-      "title": "JVM heap used by service", "type": "timeseries"
+      "targets": [
+        {
+          "expr": "sum by (service_name) (jvm_memory_used_bytes{type=\"heap\"} or process_runtime_jvm_memory_usage_bytes{type=\"heap\"})",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "JVM heap used by service",
+      "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"unit": "s"}},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
       "id": 6,
-      "targets": [{
-        "expr": "sum by (service_name) (rate(jvm_gc_duration_seconds_sum[$__rate_interval]) or rate(process_runtime_jvm_gc_duration_seconds_sum[$__rate_interval]))",
-        "legendFormat": "{{service_name}}", "refId": "A"
-      }],
-      "title": "JVM GC pause time by service", "type": "timeseries"
+      "targets": [
+        {
+          "expr": "sum by (service_name) (rate(jvm_gc_duration_seconds_sum[$__rate_interval]) or rate(process_runtime_jvm_gc_duration_seconds_sum[$__rate_interval]))",
+          "legendFormat": "{{service_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "JVM GC pause time by service",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",
   "schemaVersion": 38,
-  "tags": ["otel", "stage-a", "service-map", "RED"],
-  "templating": {"list": []},
-  "time": {"from": "now-15m", "to": "now"},
-  "title": "OTel Lab — service map + RED",
+  "tags": [
+    "otel",
+    "stage-a",
+    "service-map",
+    "RED"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(traces_spanmetrics_calls_total, service)",
+          "refId": "Prometheus-service-Variable-Query"
+        },
+        "current": {
+          "selected": false,
+          "text": "consumer",
+          "value": "consumer"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "hide": 0,
+        "options": [],
+        "regex": ""
+      }
+    ]
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "title": "OTel Lab \u2014 service map + RED",
   "uid": "otel-lab-service-map",
   "version": 3
 }

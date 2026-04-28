@@ -2,6 +2,29 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-28 - service-map dashboard: dropdown + drill-in panel
+
+Workaround for a Grafana 11 quirk: when Node Graph is fed by Tempo's
+`serviceMap` query type, Tempo injects its own click menu (Request rate
+/ Histogram / Failed rate / View traces) and overrides any custom data
+links from `fieldConfig.defaults.links`. Result: the "Open service
+detail for ${service}" link we'd configured silently never rendered.
+
+Fix without giving up the Node Graph:
+
+- Added a `service` template variable to `service-map.json`, populated
+  from `label_values(traces_spanmetrics_calls_total, service)`. Picks
+  up new services (like query-client) automatically.
+- New stat panel above the Node Graph showing the selected service
+  with a clickable data link straight to the service-detail dashboard.
+  No mystery click affordance — the entire panel is the link.
+- New markdown panel next to it with explicit URLs to the detail
+  dashboard, Loki Explore for the same service, and the JMX
+  dashboards. Useful even if the user prefers a typed approach.
+- Existing Node Graph + RED + JVM panels pushed down 3 rows; their
+  per-field data links remain in place for the time-series panels
+  (those still work fine, only the Node Graph was the broken case).
+
 ## 2026-04-28 - Stage E (partial): query-client + in-app chaos
 
 Adds read-side traffic and a probabilistic chaos hook so the dashboards
@@ -184,25 +207,4 @@ disconnected service graph from Stage A.
   with role-specific JMX exporter port + config:
   - hbase-master       :7072 -> hbase.yaml
   - hbase-regionserver :7073 -> hbase.yaml
-  - hadoop-namenode    :7074 -> hadoop.yaml
-  - hadoop-datanode    :7075 -> hadoop.yaml
-- Kafka's `KAFKA_OPTS` chains both agents; JMX exporter on :7071 ->
-  kafka.yaml. compose exposes the host-side port.
-- `prometheus/prometheus.yml`: five new `scrape_configs` (kafka,
-  hbase-master, hbase-regionserver, hadoop-namenode, hadoop-datanode).
-- `otel-collector/config.yaml`: new `transform/peer_service` processor on
-  the traces pipeline. Rewrites HBase 2.5+'s hard-coded
-  `peer.service=hbase` to `hbase-regionserver`, which collapses the
-  disjoint `consumer -> hbase` cluster in the service graph onto the
-  real `hbase-regionserver` node.
-- `grafana/provisioning/dashboards/jmx-services.json`: new dashboard with
-  rows for Kafka broker, HBase RegionServer, HDFS NN/DN.
-- New host ports: 7071-7075 (JMX exporter scrape ports, also reachable
-  by Prometheus from inside the lab network on the same numbers).
-- `docs/DEV_NOTES.md`: written-down workflow for the NTFS lockfile +
-  Write-truncation quirks so future sessions don't re-discover them.
-
-After rebuild and restart you should see:
-- Five new green scrape jobs at http://localhost:9090/targets
-- Per-component panels populating in the new "JMX" dashboard
-- Service Graph in Tempo sho
+  
