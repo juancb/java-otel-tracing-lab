@@ -19,8 +19,17 @@ x-otel-env: &otel-env
   OTEL_LOGS_EXPORTER: otlp
   OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local-otel-lab
 
+# ---------- shared build context for the unified Hadoop+HBase image ----------
+# Each role-using service references the same context+image. Compose 2.x
+# deduplicates identical builds, so this image is produced once and reused
+# across namenode, datanode, hbase-master, and hbase-regionserver.
+x-hadoop-hbase-build: &hadoop-hbase-build
+  build:
+    context: docker/hadoop-hbase
+  image: otel-lab/hadoop-hbase:local
+
 services:
-  # ─────────────────────────── Observability stack ───────────────────────────
+  # --- Observability stack ---------------------------------------------------
   tempo:
     image: grafana/tempo:2.6.0
     container_name: tempo
@@ -29,7 +38,7 @@ services:
       - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
     ports:
-      - "3200:3200"  # Tempo HTTP (datasource + debug)
+      - "3200:3200"
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:3200/ready" ]
       interval: 5s
@@ -43,10 +52,10 @@ services:
     volumes:
       - ./otel-collector/config.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC (host tools)
-      - "4318:4318"   # OTLP HTTP
-      - "13133:13133" # health check
-      - "55679:55679" # zpages
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+      - "55679:55679"
     depends_on:
       tempo:
         condition: service_healthy
@@ -74,7 +83,7 @@ services:
       tempo:
         condition: service_healthy
 
-  # ─────────────────────────── Coordination ───────────────────────────────────
+  # --- Coordination ----------------------------------------------------------
   zookeeper:
     build:
       context: docker/zookeeper
@@ -84,8 +93,6 @@ services:
       <<: *otel-env
       OTEL_SERVICE_NAME: zookeeper
       ZOO_4LW_COMMANDS_WHITELIST: "ruok,stat,mntr,conf"
-      # Attach the OTel agent to the ZK JVM. apache/zookeeper image honors
-      # SERVER_JVMFLAGS for the running daemon.
       SERVER_JVMFLAGS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar"
     ports:
       - "2181:2181"
@@ -98,19 +105,17 @@ services:
       timeout: 3s
       retries: 20
 
-  # ─────────────────────────── HDFS ───────────────────────────────────────────
+  # --- HDFS ------------------------------------------------------------------
   namenode:
-    build:
-      context: docker/hadoop-hbase
-    image: otel-lab/hadoop-hbase:local
+    <<: *hadoop-hbase-build
     container_name: namenode
     command: [ "namenode" ]
     environment:
       <<: *otel-env
       OTEL_SERVICE_NAME: hadoop-namenode
     ports:
-      - "9870:9870" # NameNode UI
-      - "8020:8020" # HDFS RPC
+      - "9870:9870"
+      - "8020:8020"
     volumes:
       - hdfs-name:/data/dfs/name
     depends_on:
@@ -124,7 +129,7 @@ services:
       start_period: 30s
 
   datanode:
-    image: otel-lab/hadoop-hbase:local
+    <<: *hadoop-hbase-build
     container_name: datanode
     command: [ "datanode" ]
     environment:
@@ -142,17 +147,17 @@ services:
       retries: 30
       start_period: 30s
 
-  # ─────────────────────────── HBase ──────────────────────────────────────────
+  # --- HBase -----------------------------------------------------------------
   hbase-master:
-    image: otel-lab/hadoop-hbase:local
+    <<: *hadoop-hbase-build
     container_name: hbase-master
     command: [ "hmaster" ]
     environment:
       <<: *otel-env
       OTEL_SERVICE_NAME: hbase-master
     ports:
-      - "16000:16000" # Master RPC
-      - "16010:16010" # Master UI
+      - "16000:16000"
+      - "16010:16010"
     depends_on:
       datanode:
         condition: service_healthy
@@ -166,14 +171,14 @@ services:
       start_period: 60s
 
   hbase-regionserver:
-    image: otel-lab/hadoop-hbase:local
+    <<: *hadoop-hbase-build
     container_name: hbase-regionserver
     command: [ "regionserver" ]
     environment:
       <<: *otel-env
       OTEL_SERVICE_NAME: hbase-regionserver
     ports:
-      - "16030:16030" # RegionServer UI
+      - "16030:16030"
     depends_on:
       hbase-master:
         condition: service_healthy
@@ -184,7 +189,7 @@ services:
       retries: 30
       start_period: 60s
 
-  # ─────────────────────────── Kafka (KRaft) ──────────────────────────────────
+  # --- Kafka (KRaft) ---------------------------------------------------------
   kafka:
     build:
       context: docker/kafka
@@ -193,8 +198,6 @@ services:
     environment:
       <<: *otel-env
       OTEL_SERVICE_NAME: kafka
-
-      # KRaft single-node config (broker AND controller in one process).
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
@@ -209,12 +212,10 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_DIRS: "/var/lib/kafka/data"
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
-
-      # Attach OTel agent. apache/kafka image's launch script honors KAFKA_OPTS.
       KAFKA_OPTS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar"
     ports:
-      - "9092:9092"   # in-network bootstrap (mostly unused from host)
-      - "29092:29092" # host bootstrap (use this from your laptop tools)
+      - "9092:9092"
+      - "29092:29092"
     volumes:
       - kafka-data:/var/lib/kafka/data
     depends_on:
@@ -227,7 +228,7 @@ services:
       retries: 30
       start_period: 30s
 
-  # ─────────────────────────── Apps ───────────────────────────────────────────
+  # --- Apps ------------------------------------------------------------------
   producer:
     build:
       context: apps
