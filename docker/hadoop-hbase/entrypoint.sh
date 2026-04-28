@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Entrypoint for the Hadoop+HBase image. Two javaagents are attached to the
-# daemon JVM:
-#   1. OpenTelemetry javaagent  (OTLP traces/metrics/logs to the Collector)
-#   2. JMX -> Prometheus exporter  (Stage B: scraped directly by Prometheus)
-#
+# Entrypoint for the Hadoop+HBase image. Two javaagents are attached:
+#   1. OpenTelemetry javaagent (OTLP traces/metrics/logs to the Collector)
+#   2. JMX -> Prometheus exporter (Stage B)
 # Each role binds the JMX exporter on a unique port so Prometheus can scrape
-# all four roles from the same lab network.
+# all roles from the same lab network.
 
 set -euo pipefail
 
@@ -22,8 +20,6 @@ JMX_AGENT_JAR="/opt/jmx-exporter/jmx_prometheus_javaagent.jar"
 export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL \
        OTEL_TRACES_EXPORTER OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER
 
-# Build the agent flags string for a given role and prepend to *_OPTS.
-# Args: role-specific JMX port, JMX config filename, *_OPTS env var name.
 prepend_agents() {
   local jmx_port="$1"
   local jmx_config="$2"
@@ -31,6 +27,26 @@ prepend_agents() {
   local jmx_agent="-javaagent:${JMX_AGENT_JAR}=${jmx_port}:/etc/jmx-exporter/${jmx_config}"
   local current="${!opts_var:-}"
   export "$opts_var=$OTEL_AGENT $jmx_agent $current"
+}
+
+# Block until HDFS has at least one live DataNode. The healthcheck at the
+# Compose layer should already gate this, but the entrypoint enforces it as
+# a backstop in case the healthcheck races with the master startup.
+wait_for_hdfs_writable() {
+  echo "[entrypoint] Waiting for HDFS to have a live DataNode..."
+  for i in $(seq 1 120); do
+    local count
+    count=$(curl -sf "http://namenode:9870/jmx?qry=Hadoop:service=NameNode,name=FSNamesystemState" 2>/dev/null \
+            | grep -oE '"NumLiveDataNodes"\s*:\s*[0-9]+' \
+            | grep -oE '[0-9]+$' \
+            || echo 0)
+    if [ "${count:-0}" -ge 1 ]; then
+      echo "[entrypoint] HDFS reports $count live DataNode(s)"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "[entrypoint] WARNING: HDFS still has no live DataNodes after 240s; starting anyway"
 }
 
 case "$ROLE" in
@@ -60,15 +76,7 @@ case "$ROLE" in
     : "${OTEL_SERVICE_NAME:=hbase-master}"
     export OTEL_SERVICE_NAME
     prepend_agents 7072 hbase.yaml HBASE_MASTER_OPTS
-
-    echo "[entrypoint] Waiting for HDFS NameNode (namenode:8020)..."
-    for i in $(seq 1 60); do
-        if (echo > /dev/tcp/namenode/8020) >/dev/null 2>&1; then
-            echo "[entrypoint] HDFS reachable"
-            break
-        fi
-        sleep 2
-    done
+    wait_for_hdfs_writable
     exec $HBASE_HOME/bin/hbase --config $HBASE_CONF_DIR master start
     ;;
 
@@ -99,7 +107,7 @@ Usage: entrypoint.sh <role>
 Roles:
   namenode       HDFS NameNode (formats on first start)        JMX :7074
   datanode       HDFS DataNode                                 JMX :7075
-  hmaster        HBase Master                                  JMX :7072
+  hmaster        HBase Master (waits for live DN)              JMX :7072
   regionserver   HBase RegionServer                            JMX :7073
   shell          HBase shell
 

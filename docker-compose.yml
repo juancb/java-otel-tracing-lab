@@ -9,8 +9,8 @@
 #   hadoop-namenode    :7074
 #   hadoop-datanode    :7075
 #
-# The JMX exporter YAML configs live under jmx-exporter/ and are bind-mounted
-# into each container at /etc/jmx-exporter/.
+# JMX exporter YAML configs live under jmx-exporter/ and are bind-mounted
+# into each Hadoop/HBase container at /etc/jmx-exporter/.
 
 name: otel-lab
 
@@ -26,10 +26,6 @@ x-hadoop-hbase-build: &hadoop-hbase-build
   build:
     context: docker/hadoop-hbase
   image: otel-lab/hadoop-hbase:local
-
-# JMX-exporter YAML mount, applied to every Hadoop/HBase role.
-x-jmx-mount: &jmx-mount
-  - ./jmx-exporter:/etc/jmx-exporter:ro
 
 services:
   # --- Observability stack ---------------------------------------------------
@@ -108,7 +104,6 @@ services:
       prometheus:
         condition: service_healthy
 
-  # --- Coordination ----------------------------------------------------------
   zookeeper:
     build:
       context: docker/zookeeper
@@ -144,14 +139,20 @@ services:
     ports:
       - "9870:9870"
       - "8020:8020"
-      - "7074:7074"   # JMX -> Prometheus
+      - "7074:7074"
     depends_on:
       otel-collector:
         condition: service_started
+    # Verify NN is out of safemode AND the RPC port is open. Plain `curl /`
+    # passes too early - the HTTP UI starts before HDFS RPC is ready.
     healthcheck:
-      test: [ "CMD-SHELL", "curl -sf http://localhost:9870/ > /dev/null" ]
+      test:
+        - CMD-SHELL
+        - |
+          curl -sf http://localhost:9870/ > /dev/null \
+          && hdfs dfsadmin -fs hdfs://localhost:8020 -safemode get 2>&1 | grep -q OFF
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 30
       start_period: 30s
 
@@ -170,11 +171,18 @@ services:
     depends_on:
       namenode:
         condition: service_healthy
+    # The DN's HTTP port (9864) comes up immediately, but registration with
+    # the NN can lag by 30s+. We ask the NN how many live DataNodes it sees;
+    # only succeed when there's at least one.
     healthcheck:
-      test: [ "CMD-SHELL", "curl -sf http://localhost:9864/ > /dev/null" ]
-      interval: 10s
+      test:
+        - CMD-SHELL
+        - |
+          curl -sf "http://namenode:9870/jmx?qry=Hadoop:service=NameNode,name=FSNamesystemState" \
+            | grep -q '"NumLiveDataNodes" : [1-9]'
+      interval: 5s
       timeout: 5s
-      retries: 30
+      retries: 60
       start_period: 30s
 
   # --- HBase -----------------------------------------------------------------
@@ -248,7 +256,6 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_DIRS: "/var/lib/kafka/data"
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
-      # Both javaagents chained, plus JMX exporter pointed at kafka.yaml.
       KAFKA_OPTS: "-javaagent:/opt/otel/opentelemetry-javaagent.jar -javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=7071:/etc/jmx-exporter/kafka.yaml"
     volumes:
       - kafka-data:/var/lib/kafka/data
@@ -267,7 +274,6 @@ services:
       retries: 30
       start_period: 30s
 
-  # --- Apps ------------------------------------------------------------------
   producer:
     build:
       context: apps
