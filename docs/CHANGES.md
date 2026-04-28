@@ -2,6 +2,33 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-28 - Healthcheck and volume fixes (kafka, loki)
+
+Stage C uncovered two boot-ordering bugs that only surfaced after the
+producer/consumer were stable enough to consistently exercise the
+dependency graph.
+
+- `docker-compose.yml` (kafka healthcheck): replaced
+  `kafka-topics.sh --list` with a bash `/dev/tcp/localhost/9092` probe.
+  The CLI inherits `KAFKA_OPTS` (which chains the OTel + JMX exporter
+  agents), so every healthcheck did class transformation on a fresh JVM
+  and timed out. Producer/consumer were stuck in `Created` state because
+  their `depends_on: kafka: service_healthy` never resolved.
+
+- `loki/config.yaml` + `docker-compose.yml` (loki volume): moved Loki's
+  data path from `/var/loki` to `/loki`. The Loki 3.x image runs as uid
+  10001 and pre-creates `/loki` with that ownership. A named volume
+  mounted at `/loki` inherits the perms; mounted at `/var/loki` (which
+  doesn't exist in the image), Docker creates the dir root-owned and
+  Loki crashes with EACCES on `mkdir /var/loki/chunks`.
+
+Migration note: existing `loki-data` named volumes were initialized
+under the old path and stay root-owned even after the config change.
+Drop and recreate:
+  docker compose stop loki
+  docker volume rm <project>_loki-data
+  docker compose up -d loki
+
 ## 2026-04-28 - Switch HBase to log4j2 (HBASE-26802)
 
 Closes the last gap in trace<->log correlation: HBase RegionServer / Master
@@ -170,31 +197,4 @@ producer, consumer, etc. are now queryable.
   promoted to Prometheus labels via `resource_to_telemetry_conversion`.
 - `grafana/provisioning/datasources/prometheus.yaml`: new datasource,
   exemplar trace-id link to the Tempo datasource.
-- `grafana/provisioning/datasources/tempo.yaml`: turned on `serviceMap`
-  and `tracesToMetrics` (request rate / error rate / p99 PromQL queries
-  pre-filled per service).
-- `grafana/provisioning/dashboards/service-map.json`: Node Graph from
-  service-graph metrics + RED panels (rate, errors, p99) per service +
-  JVM heap and GC pause panels per service.
-- New host port: 9090 (Prometheus UI).
-
-Diagnostic uplift: you can now see the dependency graph derived from
-observed traffic, plus per-service rate/error/latency in one place. The
-"is producer slow because of Kafka?" question becomes a side-by-side
-chart comparison.
-
-## 2026-04-28 - Fix: drop otel-collector healthcheck
-
-The `otel/opentelemetry-collector-contrib` image is distroless (no shell,
-no wget/curl/nc), so the original healthcheck command always failed and
-blocked every dependent service. Removed the healthcheck; dependents now
-use `condition: service_started`. Documented the rationale inline so
-future-me doesn't try to add it back.
-
-## 2026-04-27 - Verification + clean-up
-
-- Wrote a `bash -n` syntax check pass over `entrypoint.sh`.
-- YAML/XML/JSON parse pass over every config in `tempo/`, `otel-collector/`,
-  `grafana/`, and `docker/hadoop-hbase/conf/`.
-- Trimmed null-byte padding that the Write tool left on the Java sources
-  (NTFS mount qu
+- `grafana/provisioning/datasources/tempo.y

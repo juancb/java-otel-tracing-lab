@@ -1,6 +1,11 @@
 # Loki single-binary configuration for the OTel lab.
 # All-in-one mode: ingester + distributor + querier + querier-frontend in
 # one process. Local filesystem storage with TSDB indexes. No auth.
+#
+# Data lives at /loki/ — that path is owned by uid 10001 in the image, so
+# the named volume mounted at /loki inherits the right ownership. Mounting
+# the volume at /var/loki (which doesn't exist in the image) instead made
+# Docker create the path root-owned, and Loki couldn't mkdir its subdirs.
 
 auth_enabled: false
 
@@ -15,7 +20,7 @@ common:
     kvstore:
       store: inmemory
   replication_factor: 1
-  path_prefix: /var/loki
+  path_prefix: /loki
 
 schema_config:
   configs:
@@ -29,13 +34,13 @@ schema_config:
 
 storage_config:
   tsdb_shipper:
-    active_index_directory: /var/loki/tsdb-active
-    cache_location: /var/loki/tsdb-cache
+    active_index_directory: /loki/tsdb-active
+    cache_location: /loki/tsdb-cache
   filesystem:
-    directory: /var/loki/chunks
+    directory: /loki/chunks
 
 compactor:
-  working_directory: /var/loki/compactor
+  working_directory: /loki/compactor
   retention_enabled: true
   retention_delete_delay: 2h
   delete_request_store: filesystem

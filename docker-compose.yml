@@ -116,7 +116,11 @@ services:
     command: [ "-config.file=/etc/loki/config.yaml" ]
     volumes:
       - ./loki/config.yaml:/etc/loki/config.yaml:ro
-      - loki-data:/var/loki
+      # Mount the named volume at /loki — the path the Loki image already
+      # owns as uid 10001. Mounting at /var/loki (which doesn't exist in
+      # the image) makes Docker create the path root-owned, and the loki
+      # user gets EACCES when it tries to mkdir chunks/, etc.
+      - loki-data:/loki
     ports:
       - "3100:3100"
     healthcheck:
@@ -341,16 +345,4 @@ services:
         condition: service_healthy
       otel-collector:
         condition: service_started
-    restart: unless-stopped
-
-  consumer:
-    build:
-      context: apps
-      dockerfile: consumer/Dockerfile
-    image: otel-lab/consumer:local
-    container_name: consumer
-    environment:
-      <<: *otel-env
-      OTEL_SERVICE_NAME: consumer
-      BOOTSTRAP_SERVERS: kafka:9092
-      TOPIC: s
+    restart: un
