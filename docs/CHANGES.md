@@ -2,14 +2,14 @@
 
 A chronological log of what was built and why. Newest entries first.
 
-## 2026-04-27 — Initial scaffold
+## 2026-04-27 — Hadoop+HBase image
 
-- Created repo structure: `apps/`, `docker/`, `otel-collector/`, `tempo/`,
-  `grafana/`, `docs/`.
-- Added `README.md`, `.gitignore`, `docs/ARCHITECTURE.md`, `docs/CHANGES.md`.
-- Decisions captured in ARCHITECTURE.md:
-  - Single custom image for Hadoop+HBase, role-based entrypoint.
-  - Kafka in KRaft mode (single node).
-  - OTel Java agent attached to *every* JVM container, OTLP to a shared
-    Collector, Collector exports to Tempo, Grafana queries Tempo.
-  - Synthetic IoT sensor telemetry as toy ingest data.
+- Added `docker/hadoop-hbase/Dockerfile` (Temurin 11 JDK base, Hadoop 3.3.6,
+  HBase 2.5.8, OTel agent 2.10.0).
+- Role-based `entrypoint.sh` supports `namenode`, `datanode`, `hmaster`,
+  `regionserver`, `shell`. Auto-formats the NameNode on first start; HBase
+  Master and RegionServer wait for their dependencies to come up.
+- Site XMLs in `docker/hadoop-hbase/conf/`:
+  - `core-site.xml`: `fs.defaultFS=hdfs://namenode:8020`.
+  - `hdfs-site.xml`: replication=1, use-hostname mode, permission checks off.
+  - `h
