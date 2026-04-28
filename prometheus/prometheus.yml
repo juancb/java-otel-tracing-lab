@@ -17,5 +17,13 @@ global:
   external_labels:
     cluster: local-otel-lab
 
+# Tempo's metrics_generator emits samples a few seconds in the past relative
+# to wall-clock when it flushes histograms; without this window Prometheus
+# rejects them as out-of-order. NOTE: this is a config-file setting in
+# Prometheus 2.40+, not a CLI flag.
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+
 # No scrape jobs - everything arrives via remote_write.
 scrape_configs: []
