@@ -6,13 +6,13 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.ConnectionFactory;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
-import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
@@ -31,14 +32,12 @@ import java.util.Properties;
 /**
  * Polls Kafka and writes each record to HBase.
  *
- * <p>The OTel Java agent auto-instruments both the Kafka client (creating
- * {@code kafka.poll} and per-record consume spans) and the HBase client
- * (creating spans for the underlying RPCs). Trace context arrives in the
- * Kafka message headers, so spans on the consumer side automatically link
- * back to the producer's send span.
+ * <p>The OTel Java agent auto-instruments both the Kafka client and the HBase
+ * client. Trace context arrives in the Kafka message headers, so spans on
+ * the consumer side automatically link back to the producer's send span.
  *
- * <p>Row-key strategy: {@code deviceId|reverseTs} where {@code reverseTs}
- * is {@code Long.MAX_VALUE - epochMillis}. This makes scans-by-device return
+ * <p>Row-key strategy: deviceId + "|" + reverseTs, where reverseTs is
+ * Long.MAX_VALUE minus epoch millis. This makes per-device scans return the
  * newest readings first without needing a reverse scan.
  */
 public final class Consumer {
@@ -60,13 +59,12 @@ public final class Consumer {
         String zkQuorum = envOr("HBASE_ZK_QUORUM", "zookeeper");
         String tableName = envOr("HBASE_TABLE", "sensor_readings");
 
-        LOG.info("Starting consumer: bootstrap={} topic={} group={} hbaseZk={} table={}",
+        LOG.info("Starting consumer bootstrap={} topic={} group={} hbaseZk={} table={}",
                 bootstrap, topic, groupId, zkQuorum, tableName);
 
         Configuration hConf = HBaseConfiguration.create();
         hConf.set("hbase.zookeeper.quorum", zkQuorum);
         hConf.set("hbase.zookeeper.property.clientPort", "2181");
-        // Don't bother with HDFS-specific config; the client only talks to ZK + RegionServers.
 
         try (Connection hConn = ConnectionFactory.createConnection(hConf)) {
             ensureTable(hConn, tableName);
@@ -92,7 +90,7 @@ public final class Consumer {
                     }
 
                     int wrote = 0;
-                    java.util.List<Put> puts = new java.util.ArrayList<>(batch.count());
+                    List<Put> puts = new ArrayList<>(batch.count());
                     for (ConsumerRecord<String, String> rec : batch) {
                         Put put = toPut(rec);
                         if (put != null) {
@@ -101,7 +99,7 @@ public final class Consumer {
                         }
                     }
                     if (!puts.isEmpty()) {
-                        // batched put — one HBase RPC per region per batch
+                        // Batched put: one HBase RPC per region per batch.
                         table.put(puts);
                     }
                     kc.commitSync();
@@ -124,7 +122,7 @@ public final class Consumer {
             put.addColumn(CF, Q_TS, Bytes.toBytes(reading.timestamp().toEpochMilli()));
             return put;
         } catch (Exception e) {
-            LOG.warn("Skipping un-parseable record at offset {}: {}", rec.offset(), e.getMessage());
+            LOG.warn("Skipping un-parseable record at offset {} reason={}", rec.offset(), e.getMessage());
             return null;
         }
     }
@@ -152,5 +150,6 @@ public final class Consumer {
     }
 
     /** Mirror of the producer-side record so Jackson can deserialize. */
-    public record SensorReading(String deviceId, String metric, double value, Instant timestamp) {}
+    public record SensorReading(String deviceId, String metric, double value, Instant timestamp) {
+    }
 }

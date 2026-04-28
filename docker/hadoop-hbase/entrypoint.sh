@@ -3,11 +3,11 @@
 # starts the matching daemon in the foreground so Docker can supervise it.
 #
 # Roles:
-#   namenode      — HDFS NameNode (formats on first run if dfs/name is empty)
-#   datanode      — HDFS DataNode
-#   hmaster       — HBase Master
-#   regionserver  — HBase RegionServer
-#   help          — print usage and exit
+#   namenode      - HDFS NameNode (formats on first run if dfs/name is empty)
+#   datanode      - HDFS DataNode
+#   hmaster       - HBase Master
+#   regionserver  - HBase RegionServer
+#   help          - print usage and exit
 #
 # The OTel Java agent is attached via *_OPTS environment variables that the
 # Hadoop and HBase startup scripts honor. We *prepend* to whatever the user
@@ -50,10 +50,11 @@ case "$ROLE" in
     if [[ ! -f "$NAME_DIR/current/VERSION" ]]; then
         echo "[entrypoint] Formatting NameNode (first run)"
         mkdir -p "$NAME_DIR"
-        $HADOOP_HOME/bin/hdfs namenode -format -nonInteractive -force cluster1 || true
+        # Hadoop 3.x format CLI: -format then optional -clusterId,
+        # -force, -nonInteractive. Positional cluster name is rejected.
+        $HADOOP_HOME/bin/hdfs namenode -format -clusterId otel-lab -nonInteractive -force
     fi
 
-    # Run the NameNode in the foreground.
     exec $HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR namenode
     ;;
 
@@ -70,8 +71,6 @@ case "$ROLE" in
     export OTEL_SERVICE_NAME
     prepend_agent HBASE_MASTER_OPTS
 
-    # Wait for HDFS to be reachable so the Master doesn't crash-loop while
-    # NameNode is still booting. We poll the NameNode RPC port.
     echo "[entrypoint] Waiting for HDFS NameNode (namenode:8020)..."
     for i in $(seq 1 60); do
         if (echo > /dev/tcp/namenode/8020) >/dev/null 2>&1; then
@@ -81,7 +80,6 @@ case "$ROLE" in
         sleep 2
     done
 
-    # Foreground mode requires --foreground.
     exec $HBASE_HOME/bin/hbase --config $HBASE_CONF_DIR master start
     ;;
 
@@ -103,7 +101,6 @@ case "$ROLE" in
     ;;
 
   shell|hbase-shell)
-    # Convenience: drop into the HBase shell against this cluster.
     exec $HBASE_HOME/bin/hbase --config $HBASE_CONF_DIR shell
     ;;
 

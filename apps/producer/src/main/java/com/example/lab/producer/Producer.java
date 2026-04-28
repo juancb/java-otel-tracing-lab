@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Synthetic sensor-telemetry producer.
@@ -113,13 +114,6 @@ public final class Producer {
     private static String envOr(String name, String fallback) {
         String v = System.getenv(name);
         return (v == null || v.isBlank()) ? fallback : v;
-    }
-
-    // Avoid pulling in another dependency just for park.
-    private static final class LockSupport {
-        static void parkNanos(long nanos) {
-            java.util.concurrent.locks.LockSupport.parkNanos(nanos);
-        }
     }
 
     /** Wire format we send to Kafka. Public-record-style shape for readability. */
