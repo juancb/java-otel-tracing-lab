@@ -1,0 +1,55 @@
+# k8s-adapted Prometheus config for the Cilium lab.
+# Differences from /prometheus/prometheus.yml (Compose version):
+#   - Targets use FQDNs because Prometheus runs in `observability` and the
+#     JMX exporters live on pods in `data`.
+#   - Kubernetes SD job for Cilium agents (Hubble metrics).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: kind-otel-lab
+
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+
+scrape_configs:
+  # JMX exporters baked into the data-plane images.
+  - job_name: kafka
+    static_configs:
+      - targets: [ 'kafka.data.svc.cluster.local:7071' ]
+        labels: { service: kafka }
+  - job_name: hbase-master
+    static_configs:
+      - targets: [ 'hbase-master.data.svc.cluster.local:7072' ]
+        labels: { service: hbase-master }
+  - job_name: hbase-regionserver
+    static_configs:
+      - targets: [ 'hbase-regionserver.data.svc.cluster.local:7073' ]
+        labels: { service: hbase-regionserver }
+  - job_name: hadoop-namenode
+    static_configs:
+      - targets: [ 'namenode.data.svc.cluster.local:7074' ]
+        labels: { service: hadoop-namenode }
+  - job_name: hadoop-datanode
+    static_configs:
+      - targets: [ 'datanode.data.svc.cluster.local:7075' ]
+        labels: { service: hadoop-datanode }
+
+  # Cilium agent Hubble metrics — gives Kafka L7 metrics in Prometheus
+  # without needing the hubble-otel bridge (K-4 will add that for traces).
+  - job_name: cilium-agent
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [ kube-system ]
+    relabel_configs:
+      - source_labels: [ __meta_kubernetes_pod_label_k8s_app ]
+        action: keep
+        regex: cilium
+      - source_labels: [ __address__ ]
+        action: replace
+        target_label: __address__
+        regex: '([^:]+):.*'
+        replacement: '${1}:9962'

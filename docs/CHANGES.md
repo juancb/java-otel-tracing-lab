@@ -2,6 +2,109 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-04-29 - K-1 + K-2: Kubernetes + Cilium lab (kind cluster)
+
+Implements the "Production Track" from `docs/ROADMAP.md`. All files live under
+`cilium/`. The Compose stack remains unchanged; the kind cluster runs alongside
+it using host port offsets (+10000).
+
+**Infrastructure fixes needed along the way:**
+
+- **cgroup v2**: Docker Desktop 20.10.17 exposed cgroup v1 to WSL2; kindest/node
+  images for k8s 1.27+ require v2. Fix: `.wslconfig` with
+  `kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1`.
+  After `wsl --shutdown`, Docker Desktop auto-updated to 29.4.1 (which has
+  native cgroup v2 support) — so this becomes a one-time fix.
+
+- **Cilium bootstrap deadlock**: `k8sServiceHost: kubernetes` fails during
+  Cilium's init phase because CoreDNS isn't running yet and kube-proxy is
+  disabled. Fix: pass the control-plane container's IP directly via
+  `--helm-set k8sServiceHost=$(docker inspect ...)`. The bootstrap script
+  now derives this dynamically.
+
+- **Kafka KRaft controller**: `KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093`
+  failed because the ClusterIP Service doesn't expose port 9093. Fix: added
+  a headless Service `kafka-headless` and changed the voters address to
+  `1@kafka-0.kafka-headless.data.svc.cluster.local:9093`.
+
+- **HDFS DataNode registration**: NameNode rejected DataNode registration
+  because the pod IP (`10.244.x.x`) can't be reverse-resolved to a hostname.
+  Fix: `cilium/configs/hdfs-site.xml` (mounted via `subPath`) adds
+  `dfs.namenode.datanode.registration.ip-hostname-check=false`.
+
+- **Block pool ID mismatch**: NameNode uses emptyDir; when restarted it
+  reformats with a new block pool ID, while the old DataNode pod retains the
+  previous ID. Fix: force-delete the DataNode pod after NameNode restart so
+  both start fresh.
+
+**K-1 result** (foundation): kind cluster with k8s 1.31.0, Cilium 1.19.1 +
+Hubble fully healthy, all 19 pods Running. Observability stack (Tempo,
+Prometheus, Loki, Grafana, Alloy, OTel Collector) and data plane (ZK, Kafka,
+Hadoop, HBase, producer, consumer, query-client) all Running.
+
+URLs (Compose stack on :3000/:9090, kind cluster on +10000):
+- Grafana: http://localhost:13000
+- Prometheus: http://localhost:19090
+
+**K-2 result** (Kafka L7): `CiliumNetworkPolicy` `kafka-l7` in the `data`
+namespace enables Cilium's Envoy Kafka filter on port 9092. Hubble shows
+per-connection Kafka operation events (`apiversions`, `produce`, `fetch`)
+between `producer → kafka-0` and `consumer → kafka-0`.
+
+Known limitation: Cilium 1.19's Kafka L7 filter uses an older protocol parser
+and cannot match the topic name in Kafka 3.8's Produce protocol v9+ requests
+(they appear with `topic ''`). The `role: produce` / `role: consume` rules
+without topic restriction work for policy validation, but the Produce requests
+are still dropped by the filter because the parser can't identify the topic for
+enforcement. Kafka clients retry these transparently. This is a Cilium Kafka
+filter compatibility issue with Kafka 3.8; it does not affect OTel traces which
+still capture the full produce/consume spans from the client side.
+
+To run Hubble live:
+```powershell
+# In one terminal:
+cilium hubble port-forward --context kind-otel-lab
+# In another:
+hubble observe --namespace data --protocol kafka --follow
+# Or open the Hubble UI:
+cilium hubble ui --context kind-otel-lab
+```
+
+## 2026-04-29 - K-3: gRPC + HTTP L7 visibility policies
+
+Adds `cilium/manifests/policies/grpc-visibility.yaml` and
+`cilium/manifests/policies/http-visibility.yaml` to K-3 of the production track.
+
+**HTTP L7 (Jetty UIs) — confirmed working:**
+Hubble shows `http-request FORWARDED` events with the full URL path and
+response latency for traffic hitting the NameNode Jetty UI (`:9870`) and the
+HBase Master/RegionServer UIs (`:16010` / `:16030`).  Example:
+```
+datanode-0 -> namenode-0:9870 http-request FORWARDED
+  (HTTP/1.1 GET http://namenode:9870/jmx?qry=...FSNamesystemState)
+datanode-0 <- namenode-0:9870 http-response FORWARDED
+  (HTTP/1.1 200 2ms)
+```
+This gives the network-layer view of the same requests the OTel Java agent's
+Jetty servlet instrumentation captures as SERVER spans — two independent
+signals, both in the same Grafana stack.
+
+**gRPC OTLP (otel-collector:4317) — policy valid, per-RPC events not surfaced:**
+The `grpc-otlp-visibility` policy is VALID and Cilium's Envoy proxy is in the
+path for all nine JVM pods' OTLP gRPC connections. Traffic shows in Hubble at
+L4 (`to-endpoint FORWARDED TCP Flags: ACK, PSH`) but not as individual
+`http-request` L7 events. Cause: OTLP uses long-lived multiplexed HTTP/2
+connections; Hubble captures flow events at Envoy boundaries but does not emit
+one event per gRPC stream on a multiplexed H2 connection. This is a Hubble
+architectural constraint, not a policy configuration error.
+
+**Policy side-effect fixed (implicit Cilium default-deny):**
+Applying ingress policies to an endpoint causes Cilium to deny all unlisted
+ingress by default. The initial policies (K-2 Kafka, K-3 HTTP) inadvertently
+blocked Prometheus from scraping the JMX exporter ports (7071-7075). Fixed
+by adding explicit L4 allow rules for each JMX port in the same policy that
+covers the L7 port, and adding L4 rules for the HDFS/HBase RPC ports.
+
 ## 2026-04-28 - service-map dashboard: dropdown + drill-in panel
 
 Workaround for a Grafana 11 quirk: when Node Graph is fed by Tempo's
@@ -207,4 +310,143 @@ disconnected service graph from Stage A.
   with role-specific JMX exporter port + config:
   - hbase-master       :7072 -> hbase.yaml
   - hbase-regionserver :7073 -> hbase.yaml
-  
+  - hadoop-namenode    :7074 -> hadoop.yaml
+  - hadoop-datanode    :7075 -> hadoop.yaml
+- Kafka's `KAFKA_OPTS` chains both agents; JMX exporter on :7071 ->
+  kafka.yaml. compose exposes the host-side port.
+- `prometheus/prometheus.yml`: five new `scrape_configs` (kafka,
+  hbase-master, hbase-regionserver, hadoop-namenode, hadoop-datanode).
+- `otel-collector/config.yaml`: new `transform/peer_service` processor on
+  the traces pipeline. Rewrites HBase 2.5+'s hard-coded
+  `peer.service=hbase` to `hbase-regionserver`, which collapses the
+  disjoint `consumer -> hbase` cluster in the service graph onto the
+  real `hbase-regionserver` node.
+- `grafana/provisioning/dashboards/jmx-services.json`: new dashboard with
+  rows for Kafka broker, HBase RegionServer, HDFS NN/DN.
+- New host ports: 7071-7075 (JMX exporter scrape ports, also reachable
+  by Prometheus from inside the lab network on the same numbers).
+- `docs/DEV_NOTES.md`: written-down workflow for the NTFS lockfile +
+  Write-truncation quirks so future sessions don't re-discover them.
+
+After rebuild and restart you should see:
+- Five new green scrape jobs at http://localhost:9090/targets
+- Per-component panels populating in the new "JMX" dashboard
+- Service Graph in Tempo showing `consumer -> hbase-regionserver`
+  (single connected component, not disjoint anymore) once a few minutes
+  of producer traffic have flowed through
+
+## 2026-04-28 - Stage A verified working + service-graph documentation
+
+The end-to-end pipeline is up: producer -> Kafka -> consumer -> HBase ->
+HDFS, with traces flowing through the Collector and into Tempo. The Stage
+A service graph in Grafana renders, with the expected caveats:
+
+- Two disconnected clusters in the graph: the top cluster
+  (user -> hadoop-namenode/datanode/hbase-master/regionserver) is from
+  Docker healthcheck curl traffic hitting Jetty; the bottom cluster
+  (consumer -> hbase) is from HBase's built-in OTel client-side spans.
+- The bottom cluster's `hbase` is a phantom node because HBase 2.4+ hard-
+  codes `peer.service=hbase` in its tracing, which doesn't match the
+  per-role service.name (`hbase-regionserver`, `hbase-master`).
+- New `docs/SERVICE_GRAPH.md` documents this and explains what Stage B
+  will fix.
+
+Mid-flight fixes that were needed to get here:
+
+- Switched consumer from `hbase-client` to `hbase-shaded-client` to
+  resolve a Hadoop split-classpath NoSuchMethodError on
+  HadoopKerberosName.setRuleMechanism (3.2.4 hadoop-auth vs 3.3.6
+  hadoop-common transitive versions).
+- Removed the otel-collector healthcheck (the contrib image is distroless
+  - no shell/wget/nc), and switched dependents to `condition: service_started`.
+- Moved `out_of_order_time_window` from CLI flag (rejected by Prometheus)
+  into prometheus.yml under `storage.tsdb`.
+
+## 2026-04-28 - Stage A: Prometheus + service-map
+
+Roadmap stage A is in. Tempo's service-graph and span-metrics generators
+finally have somewhere to land, and JVM-agent metrics from Kafka, HBase,
+producer, consumer, etc. are now queryable.
+
+- New `prometheus/prometheus.yml`: no scrape jobs; Prometheus is purely a
+  remote-write target.
+- `docker-compose.yml`: added `prometheus` service (`prom/prometheus:v2.54.1`)
+  with `--web.enable-remote-write-receiver`, exemplar storage, native
+  histograms, and a 30m out-of-order window so Tempo's slightly-delayed
+  metric_generator writes are accepted. Tempo, otel-collector, and grafana
+  all `depends_on: prometheus`.
+- `tempo/tempo.yaml`: `metrics_generator.storage.remote_write` now points at
+  `http://prometheus:9090/api/v1/write` with `send_exemplars: true`.
+- `otel-collector/config.yaml`: added `prometheusremotewrite` exporter; the
+  `metrics` pipeline now fans out to both Prometheus and the debug exporter.
+  Resource attributes (service.name, container, deployment.environment) are
+  promoted to Prometheus labels via `resource_to_telemetry_conversion`.
+- `grafana/provisioning/datasources/prometheus.yaml`: new datasource,
+  exemplar trace-id link to the Tempo datasource.
+- `grafana/provisioning/datasources/tempo.yaml`: turned on `serviceMap`
+  and `tracesToMetrics` (request rate / error rate / p99 PromQL queries
+  pre-filled per service).
+- `grafana/provisioning/dashboards/service-map.json`: Node Graph from
+  service-graph metrics + RED panels (rate, errors, p99) per service +
+  JVM heap and GC pause panels per service.
+- New host port: 9090 (Prometheus UI).
+
+Diagnostic uplift: you can now see the dependency graph derived from
+observed traffic, plus per-service rate/error/latency in one place. The
+"is producer slow because of Kafka?" question becomes a side-by-side
+chart comparison.
+
+## 2026-04-28 - Fix: drop otel-collector healthcheck
+
+The `otel/opentelemetry-collector-contrib` image is distroless (no shell,
+no wget/curl/nc), so the original healthcheck command always failed and
+blocked every dependent service. Removed the healthcheck; dependents now
+use `condition: service_started`. Documented the rationale inline so
+future-me doesn't try to add it back.
+
+## 2026-04-27 - Verification + clean-up
+
+- Wrote a `bash -n` syntax check pass over `entrypoint.sh`.
+- YAML/XML/JSON parse pass over every config in `tempo/`, `otel-collector/`,
+  `grafana/`, and `docker/hadoop-hbase/conf/`.
+- Trimmed null-byte padding that the Write tool left on the Java sources
+  (NTFS mount quirk that shows up only on `wc -c`, not on `Read`).
+- Static review of Java code: balanced braces, complete record decls,
+  cleaned imports.
+
+## 2026-04-27 - Compose + Java apps + observability stack
+
+- `docker/kafka/Dockerfile` and `docker/zookeeper/Dockerfile`: multi-stage
+  builds that bake the OTel Java agent into the official `apache/kafka:3.8.0`
+  and `zookeeper:3.9` images.
+- `tempo/tempo.yaml`: monolithic mode, OTLP receivers, local-filesystem
+  block storage, service-graph + span-metrics generators on by default.
+- `otel-collector/config.yaml`: OTLP in, Tempo + debug exporter out, with
+  `memory_limiter`, `batch`, and a `resource/lab` processor.
+- `grafana/provisioning/`: Tempo datasource + starter trace-search dashboard.
+- `apps/`: Maven multi-module project (parent + producer + consumer fat
+  jars built via Shade plugin, Dockerfiles bake in agent + JAVA_TOOL_OPTIONS).
+- `docker-compose.yml`: 11 services tied together with healthcheck-gated
+  depends_on ordering and the shared `x-otel-env` anchor.
+
+## 2026-04-27 - Hadoop+HBase image
+
+- `docker/hadoop-hbase/Dockerfile`: Temurin 11 JDK base, Hadoop 3.3.6,
+  HBase 2.5.8, OTel agent 2.10.0. Later switched primary mirror to
+  `dlcdn.apache.org` for build speed (archive.apache.org is throttled).
+- Role-based `entrypoint.sh` supports `namenode`, `datanode`, `hmaster`,
+  `regionserver`, `shell`. Auto-formats the NameNode on first start.
+- Site XMLs in `docker/hadoop-hbase/conf/`: distributed mode, HDFS root,
+  ZK at `zookeeper:2181`, Java 11 module-access flags.
+- OTel agent attached via daemon-specific `*_OPTS` env vars in entrypoint.
+
+## 2026-04-27 - Initial scaffold
+
+- Created repo structure: `apps/`, `docker/`, `otel-collector/`, `tempo/`,
+  `grafana/`, `docs/`.
+- Decisions captured in ARCHITECTURE.md:
+  - Single custom image for Hadoop+HBase, role-based entrypoint.
+  - Kafka in KRaft mode (single node).
+  - OTel Java agent attached to *every* JVM container, OTLP to a shared
+    Collector, Collector exports to Tempo, Grafana queries Tempo.
+  - Synthetic IoT sensor telemetry as toy ingest data.

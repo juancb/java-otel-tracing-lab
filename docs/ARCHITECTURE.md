@@ -206,4 +206,32 @@ Tempo to something else (Jaeger, an APM vendor, stdout) by editing one file.
 
 The agent JAR is fetched at image build time from the
 `opentelemetry-java-instrumentation` GitHub releases (pinned via build arg
-in each Dockerfile). It 
+in each Dockerfile). It lives at `/opt/otel/opentelemetry-javaagent.jar`
+inside every JVM container.
+
+For our own Java apps we attach it via `JAVA_TOOL_OPTIONS`. For Kafka, HBase,
+Hadoop, and ZooKeeper we attach it via the `*_OPTS` env vars those daemons
+honor on startup. The wiring is declarative and visible in `docker-compose.yml`
+plus the per-service Dockerfile — no shell-script glue.
+
+## Service graph notes
+
+The Stage A Service Graph (Grafana Explore -> Tempo -> Service Graph) splits
+into two disconnected clusters because two different sources of spans don't
+overlap: healthcheck-driven Jetty server spans (top cluster, attributed to a
+synthetic `user` client) and HBase client spans (bottom cluster, dangling
+into a phantom `hbase` node because HBase's built-in tracing hard-codes
+`peer.service=hbase`). [docs/SERVICE_GRAPH.md](SERVICE_GRAPH.md) walks
+through what each piece means and what Stage B will do to merge them.
+
+## Known limitations
+
+- Single-node setup. Replication, region splitting, and cross-broker
+  scenarios won't appear.
+- Kafka broker, ZooKeeper, HBase server, and Hadoop daemon traces are
+  sparse-to-empty for the reasons described in "What auto-instrumentation
+  actually covers" above. The agent loads everywhere, but auto-instrumentation
+  isn't magic — it only emits spans where it has matching modules.
+- The metrics and logs streams flow into the Collector but stop at the
+  debug exporter. To see them in Grafana you'd need to add a
+  Prometheus/Loki backend (or remote-write to whatever you use elsewhere).

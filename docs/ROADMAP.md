@@ -121,4 +121,143 @@ actually catch real failures.
   - `docker compose stop hbase-regionserver` — what fires?
   - `docker compose run --cpus=0.1 consumer` — does latency alert fire?
   - Pause GC on the producer (`-XX:+UseSerialGC -Xmx32m`) — does heap alert
-    catch it before u
+    catch it before user-visible latency?
+  - Block port between consumer and ZK with iptables — what dashboard
+    surfaces the symptom first?
+  - Crank `CHAOS_LATENCY_PROB=0.2` on the consumer for 5 minutes — do
+    p99 + error-rate alerts catch it?
+
+**What this buys you:** confidence that the observability stack pays off.
+
+**Depends on:** Stage D for the alert-firing scenarios.
+
+## Out of scope (intentionally)
+
+- A real metrics-long-term-storage backend (Mimir, Thanos). For a laptop
+  lab Prometheus's local TSDB is fine.
+- Multi-tenancy in any of the data stores.
+- TLS / auth between any of the components. This is a sandbox.
+- Production-grade Kafka or HBase tuning. This lab is about *seeing* the
+  system, not running it well.
+
+---
+
+## Production Track — Kubernetes + Cilium
+
+This track is a parallel branch, not a linear continuation of Stages A–E. It
+replaces the Docker Compose runtime with a real Kubernetes cluster and adds
+Cilium as the CNI + service-mesh layer. The observability backend (Tempo,
+Prometheus, Loki, Grafana) stays the same.
+
+**Why a separate track:** Stages A–E instrument the application layer. This
+track adds the *network* layer — Cilium sees what the JVM agents can't, and
+vice versa. Together they give you the full picture you'd expect in production.
+
+See `docs/K8S_PROJECTION.md` for the per-protocol coverage table and the
+architecture diagram. Implementation lives in `cilium/`.
+
+### K-1 — kind cluster + Cilium CNI
+
+Bootstrap a single-node (or 3-node) kind cluster with Cilium as the CNI and
+Hubble UI enabled.
+
+- `cilium/kind-cluster.yaml`: disables kind's default CNI so Cilium can own it.
+- Install Cilium via Helm (`cilium/cilium-values.yaml`) with `hubble.relay`
+  and `hubble.ui` enabled.
+- Verify: `cilium status --wait`, `hubble observe` shows pod-to-pod flows.
+
+**What this buys you:** a real CNI environment that matches managed k8s
+(EKS, GKE, AKS all support Cilium). Hubble is the always-on network observer.
+
+### K-2 — Kafka L7 visibility
+
+Enable Cilium's Kafka L7 policy on the `kafka` pod. This uses an Envoy Kafka
+filter — no changes to the broker or the Java apps required.
+
+- Add a `CiliumNetworkPolicy` with `rules.kafka` allow-list (topic name, role:
+  produce / consume) targeting the kafka pod.
+- Verify: `hubble observe --protocol kafka` shows produce/consume events with
+  topic names. The Hubble service map shows `producer → kafka → consumer` with
+  per-topic labels.
+
+**What this buys you:** broker-side Kafka visibility. The OTel Java agent sees
+the *client* side (KafkaProducer.send span in producer, poll span in consumer).
+Cilium sees the *broker* side — topic-level throughput, latency, and error rate
+without touching the application. These two views are complementary, not
+redundant.
+
+**Note:** requires PLAINTEXT Kafka (no broker-level TLS). Our current setup
+already uses `PLAINTEXT` — no change needed.
+
+### K-3 — gRPC + HTTP L7 visibility
+
+Enable Cilium L7 visibility on the OTLP gRPC port (4317) and on the Jetty HTTP
+ports (HBase 16010/16030, Hadoop 9870).
+
+- Add `CiliumNetworkPolicy` with `rules.http` and `rules.grpc` for those ports.
+- Verify: `hubble observe --protocol grpc` shows method names like
+  `opentelemetry.proto.collector.trace.v1.TraceService/Export`. HTTP panel
+  shows Jetty health-check paths.
+
+**What this buys you:** confirms OTLP telemetry is flowing at the network layer
+(useful for debugging "why aren't my spans arriving?") and shows the same
+Jetty-UI edges the OTel agent surfaces, from the network perspective.
+
+### K-4 — hubble-otel bridge
+
+Deploy `github.com/cilium/hubble-otel` as a Deployment in the cluster. It
+reads the Hubble gRPC stream and forwards Hubble flow events to the OTel
+Collector as OTLP logs (or spans).
+
+- Add `cilium/manifests/hubble-otel.yaml`: Deployment + Service pointing at the
+  existing OTel Collector.
+- Configure the OTel Collector's logs pipeline to accept Hubble events and ship
+  them to Loki (with a `service=hubble` label).
+- Verify: Grafana Loki Explore, `{service="hubble"}` shows Kafka flow events.
+  A Kafka produce trace in Tempo and the corresponding Hubble network event in
+  Loki are visible side-by-side.
+
+**What this buys you:** network events (DNS failures, TCP resets, Kafka topic
+errors) appear in the same Grafana stack as OTel traces. You can correlate "the
+HBase Put span took 800ms" with "there were 3 TCP retransmits on that connection
+in the same window."
+
+### K-5 — OTel Operator (agent injection)
+
+Replace baked-in `JAVA_TOOL_OPTIONS=-javaagent:...` in the app Dockerfiles with
+OTel Operator init-container injection. This is the production pattern — the
+agent version is managed by the platform, not the app image.
+
+- Install `opentelemetry-operator` via Helm.
+- Create an `Instrumentation` CRD in `cilium/otel-operator/instrumentation.yaml`
+  with Java agent config (exporter endpoint, resource attributes).
+- Annotate the producer / consumer / query-client `Deployment` manifests with
+  `instrumentation.opentelemetry.io/inject-java: "true"`.
+- Verify: `kubectl describe pod producer-xxx` shows the init container that
+  copies the agent JAR; spans still arrive in Tempo.
+
+**What this buys you:** decouples the agent upgrade cycle from the app build.
+Mirrors how platform teams manage OTel in production.
+
+### K-6 — Persistent gaps and the path forward
+
+After K-1 through K-5, what remains opaque in the network graph:
+
+| Path | Protocol | Why | Option to fill it |
+|---|---|---|---|
+| HBase client → RegionServer | HBase RPC (TCP:16000/16030) | No Cilium L7 parser | ROADMAP2.md §2 option A (custom OTel agent extension) |
+| RegionServer → NameNode | Hadoop IPC (TCP:8020) | No Cilium L7 parser | Same custom extension |
+| DataNode block transfer | DataTransferProtocol (TCP:9866) | No Cilium L7 parser | eBPF custom dissector (high effort) |
+| All → ZooKeeper | ZK wire (TCP:2181) | No Cilium L7 parser | Not worth the effort for this lab |
+
+These gaps are the same in production Kubernetes. Cilium can tell you *that*
+traffic flowed on those ports and *how many bytes*, but not *which table* or
+*which region*. OTel's HBase client instrumentation (already present via the
+Java agent) fills in the client side; the server side requires the custom
+extension from ROADMAP2.md.
+
+**Stage D equivalence in k8s:** swap `dockerstatsreceiver` for cAdvisor +
+`kube-state-metrics` scraped by Prometheus; alerting rules stay the same.
+The OTel Collector's `k8sattributesprocessor` enriches every span/metric with
+the pod name, namespace, and node, giving you the same "container restart count"
+signal that Stage D targets on Compose.

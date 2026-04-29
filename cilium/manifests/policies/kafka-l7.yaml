@@ -1,0 +1,50 @@
+# K-2: Kafka L7 visibility + allow JMX scraping.
+#
+# The Envoy Kafka filter is enabled on port 9092; Hubble shows per-connection
+# produce/fetch events.  Port 7071 (JMX exporter) is added as an L4 allow so
+# Prometheus can still scrape broker metrics.
+
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kafka-l7
+  namespace: data
+spec:
+  endpointSelector:
+    matchLabels:
+      app: kafka
+  ingress:
+    # L7 Kafka: allow producer and consumer on the broker listener
+    - fromEndpoints:
+        - matchLabels:
+            app: producer
+      toPorts:
+        - ports:
+            - { port: "9092", protocol: TCP }
+          rules:
+            kafka:
+              - { role: produce }
+    - fromEndpoints:
+        - matchLabels:
+            app: consumer
+      toPorts:
+        - ports:
+            - { port: "9092", protocol: TCP }
+          rules:
+            kafka:
+              - { role: consume }
+    # L4: Prometheus JMX scraping
+    - fromEndpoints:
+        - matchLabels:
+            app: prometheus
+            "k8s:io.kubernetes.pod.namespace": observability
+      toPorts:
+        - ports:
+            - { port: "7071", protocol: TCP }
+    # L4: allow the broker to reach its own controller port (KRaft)
+    - fromEndpoints:
+        - matchLabels:
+            app: kafka
+      toPorts:
+        - ports:
+            - { port: "9093", protocol: TCP }

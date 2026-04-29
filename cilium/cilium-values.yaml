@@ -1,0 +1,53 @@
+# Cilium Helm values for the otel-lab kind cluster.
+# Bootstrap installs via:  cilium install --version=v1.19.1 --values=cilium-values.yaml
+
+# Required when kube-proxy is disabled in the kind config.
+kubeProxyReplacement: true
+
+# k8sServiceHost / k8sServicePort are set dynamically by bootstrap.ps1 to
+# the control-plane container's IP on the kind bridge (e.g. 172.28.0.2:6443).
+# Using the DNS name "kubernetes" fails during Cilium's init phase because
+# CoreDNS isn't running yet and the kube-proxy VIP isn't configured (we
+# disabled kube-proxy in favour of Cilium's replacement).
+# The bootstrap script passes these as --helm-set overrides at install time.
+
+# Hubble is what makes Cilium an observability tool, not just a CNI.
+# Relay aggregates flows across nodes; UI gives the visual service map.
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+  # L7 visibility annotations cause the cilium-agent to redirect matched
+  # traffic through the Envoy proxy and emit L7 flow events.
+  metrics:
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - http
+      - kafka:labelsContext=source_namespace,source_workload,destination_namespace,destination_workload
+
+# Enable the Envoy proxy DaemonSet — required for any L7 policy enforcement
+# (Kafka, HTTP, gRPC). Cilium can ship Envoy embedded in the agent or as a
+# separate DaemonSet; the DaemonSet is the production pattern.
+envoy:
+  enabled: true
+
+# Operator: only one replica needed for a single-node kind cluster.
+operator:
+  replicas: 1
+
+# IPAM mode that works out of the box with kind.
+ipam:
+  mode: kubernetes
+
+# Disable features we don't need that add CPU/memory overhead.
+ingressController:
+  enabled: false
+gatewayAPI:
+  enabled: false

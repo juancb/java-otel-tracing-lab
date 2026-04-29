@@ -1,0 +1,26 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: otel-lab
+
+# Disable kind's default CNI (kindnet) so Cilium can own the network.
+# Disable kube-proxy so Cilium can replace it (kubeProxyReplacement=true).
+networking:
+  disableDefaultCNI: true
+  kubeProxyMode: none
+
+nodes:
+  - role: control-plane
+    # Pin to an older node image. The default in kind 0.31 is v1.35.0 which
+    # needs a newer kernel/runc than Docker Desktop 20.10.17 (mid-2022) ships.
+    # v1.31.0 is the last release that works against this Docker.
+    image: kindest/node:v1.31.0@sha256:53df588e04085fd41ae12de0c3fe4c72f7013bba32a20e7325357a1ac94ba865
+    # NodePort host mappings, offset by +10000 from the Compose stack so both
+    # can run side by side. NodePorts (in-cluster) must stay in 30000-32767;
+    # only the host side is offset.
+    extraPortMappings:
+      - { containerPort: 30000, hostPort: 13000, protocol: TCP }  # grafana
+      - { containerPort: 30090, hostPort: 19090, protocol: TCP }  # prometheus
+      - { containerPort: 30200, hostPort: 13200, protocol: TCP }  # tempo
+      - { containerPort: 30100, hostPort: 13100, protocol: TCP }  # loki
+      - { containerPort: 32092, hostPort: 39092, protocol: TCP }  # kafka external
+      - { containerPort: 32134, hostPort: 22345, protocol: TCP }  # alloy ui
