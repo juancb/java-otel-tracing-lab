@@ -26,4 +26,6 @@ ENV OTEL_SERVICE_NAME=consumer \
     OTEL_TRACES_EXPORTER=otlp \
     OTEL_METRICS_EXPORTER=otlp \
     OTEL_LOGS_EXPORTER=otlp \
-    JAVA_TOOL_OPTIONS="-javaagent:/opt/otel/opentelemetry-javaagen
+    JAVA_TOOL_OPTIONS="-javaagent:/opt/otel/opentelemetry-javaagent.jar"
+
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

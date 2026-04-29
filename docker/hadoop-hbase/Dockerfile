@@ -66,4 +66,18 @@ COPY conf/log4j.properties   ${HADOOP_CONF_DIR}/log4j.properties
 # log4j 2.x, so HBase logs need this file to be trace-correlated.
 COPY conf/log4j2.properties  ${HBASE_CONF_DIR}/log4j2.properties
 
-RUN echo "localhost" > ${HBASE_CONF_DIR
+RUN echo "localhost" > ${HBASE_CONF_DIR}/regionservers \
+ && echo "localhost" > ${HADOOP_CONF_DIR}/workers
+
+ENV HBASE_ROOT_LOGGER=INFO,console
+ENV HDFS_NAMENODE_USER=root
+ENV HDFS_DATANODE_USER=root
+ENV HDFS_SECONDARYNAMENODE_USER=root
+ENV HBASE_MANAGES_ZK=false
+
+# --- Entrypoint ------------------------------------------------------------
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["help"]
