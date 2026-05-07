@@ -13,6 +13,14 @@ PROM="${1:-http://localhost:9090}"
 python3 - "$PROM" <<'EOF'
 import sys, json, urllib.request, urllib.parse
 
+# Force UTF-8 stdout so the box-drawing separator and em-dashes render on
+# Windows (Python 3.x defaults to cp1252 there and crashes with
+# UnicodeEncodeError otherwise). No-op on Linux/Mac which already use UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, OSError):
+    pass
+
 prom = sys.argv[1]
 
 def pq(expr):
