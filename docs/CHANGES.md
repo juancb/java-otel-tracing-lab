@@ -2,108 +2,45 @@
 
 A chronological log of what was built and why. Newest entries first.
 
-## 2026-04-29 - K-1 + K-2: Kubernetes + Cilium lab (kind cluster)
+## 2026-04-29 - Removed Kubernetes + Cilium production track
 
-Implements the "Production Track" from `docs/ROADMAP.md`. All files live under
-`cilium/`. The Compose stack remains unchanged; the kind cluster runs alongside
-it using host port offsets (+10000).
+Tried, learned, removed. The `cilium/` directory, `docs/K8S_PROJECTION.md`,
+`docs/ROADMAP2.md`, `grafana/provisioning/dashboards/hubble-l7.json`, and the
+"Production Track" section of `docs/ROADMAP.md` are gone. Full implementation
+is preserved in commits `37e9261`, `54b7e98`, and earlier — accessible via
+`git log` if needed.
 
-**Infrastructure fixes needed along the way:**
+**What we built (commits 37e9261, 54b7e98):**
+- kind cluster with Cilium 1.19.1 + Hubble; 19 pods (observability +
+  data plane) running; HTTP L7 policies on Jetty UIs working; gRPC L7
+  policy on OTLP collector working at L4.
 
-- **cgroup v2**: Docker Desktop 20.10.17 exposed cgroup v1 to WSL2; kindest/node
-  images for k8s 1.27+ require v2. Fix: `.wslconfig` with
-  `kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1`.
-  After `wsl --shutdown`, Docker Desktop auto-updated to 29.4.1 (which has
-  native cgroup v2 support) — so this becomes a one-time fix.
+**Why we removed it:**
+- Cilium's Kafka L7 support relies on **proxylib**, which is removed in
+  Cilium 1.20 ([PR #43557](https://github.com/cilium/cilium/pull/43557),
+  [#45644](https://github.com/cilium/cilium/pull/45644)). The `role: produce` /
+  `role: consume` rules in CiliumNetworkPolicy were already broken in 1.19
+  (DROPPED Kafka 3.8 protocol v9+ Produce requests; topic always rendered
+  as `''`). The headline reason for trying Cilium L7 — broker-side Kafka
+  topic visibility — is no longer feasible upstream.
+- HTTP L7 visibility on Jetty UIs and gRPC L7 on OTLP do work, but they
+  duplicate signals the OTel Java agent already captures as SERVER spans.
+  No new information, additional infrastructure to maintain.
+- Future production deployments needing broker-side Kafka enforcement
+  should use `CiliumEnvoyConfig` with Envoy's native Kafka filter, not
+  the deprecated `CiliumNetworkPolicy` Kafka rules.
 
-- **Cilium bootstrap deadlock**: `k8sServiceHost: kubernetes` fails during
-  Cilium's init phase because CoreDNS isn't running yet and kube-proxy is
-  disabled. Fix: pass the control-plane container's IP directly via
-  `--helm-set k8sServiceHost=$(docker inspect ...)`. The bootstrap script
-  now derives this dynamically.
+**What stays:**
+- Compose-based lab (Stages A-E) is the supported development environment.
+- OTel Java agent for application-level Kafka observability — topic names
+  are in span attributes, surface in Tempo/Grafana via span-metrics.
 
-- **Kafka KRaft controller**: `KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093`
-  failed because the ClusterIP Service doesn't expose port 9093. Fix: added
-  a headless Service `kafka-headless` and changed the voters address to
-  `1@kafka-0.kafka-headless.data.svc.cluster.local:9093`.
-
-- **HDFS DataNode registration**: NameNode rejected DataNode registration
-  because the pod IP (`10.244.x.x`) can't be reverse-resolved to a hostname.
-  Fix: `cilium/configs/hdfs-site.xml` (mounted via `subPath`) adds
-  `dfs.namenode.datanode.registration.ip-hostname-check=false`.
-
-- **Block pool ID mismatch**: NameNode uses emptyDir; when restarted it
-  reformats with a new block pool ID, while the old DataNode pod retains the
-  previous ID. Fix: force-delete the DataNode pod after NameNode restart so
-  both start fresh.
-
-**K-1 result** (foundation): kind cluster with k8s 1.31.0, Cilium 1.19.1 +
-Hubble fully healthy, all 19 pods Running. Observability stack (Tempo,
-Prometheus, Loki, Grafana, Alloy, OTel Collector) and data plane (ZK, Kafka,
-Hadoop, HBase, producer, consumer, query-client) all Running.
-
-URLs (Compose stack on :3000/:9090, kind cluster on +10000):
-- Grafana: http://localhost:13000
-- Prometheus: http://localhost:19090
-
-**K-2 result** (Kafka L7): `CiliumNetworkPolicy` `kafka-l7` in the `data`
-namespace enables Cilium's Envoy Kafka filter on port 9092. Hubble shows
-per-connection Kafka operation events (`apiversions`, `produce`, `fetch`)
-between `producer → kafka-0` and `consumer → kafka-0`.
-
-Known limitation: Cilium 1.19's Kafka L7 filter uses an older protocol parser
-and cannot match the topic name in Kafka 3.8's Produce protocol v9+ requests
-(they appear with `topic ''`). The `role: produce` / `role: consume` rules
-without topic restriction work for policy validation, but the Produce requests
-are still dropped by the filter because the parser can't identify the topic for
-enforcement. Kafka clients retry these transparently. This is a Cilium Kafka
-filter compatibility issue with Kafka 3.8; it does not affect OTel traces which
-still capture the full produce/consume spans from the client side.
-
-To run Hubble live:
-```powershell
-# In one terminal:
-cilium hubble port-forward --context kind-otel-lab
-# In another:
-hubble observe --namespace data --protocol kafka --follow
-# Or open the Hubble UI:
-cilium hubble ui --context kind-otel-lab
-```
-
-## 2026-04-29 - K-3: gRPC + HTTP L7 visibility policies
-
-Adds `cilium/manifests/policies/grpc-visibility.yaml` and
-`cilium/manifests/policies/http-visibility.yaml` to K-3 of the production track.
-
-**HTTP L7 (Jetty UIs) — confirmed working:**
-Hubble shows `http-request FORWARDED` events with the full URL path and
-response latency for traffic hitting the NameNode Jetty UI (`:9870`) and the
-HBase Master/RegionServer UIs (`:16010` / `:16030`).  Example:
-```
-datanode-0 -> namenode-0:9870 http-request FORWARDED
-  (HTTP/1.1 GET http://namenode:9870/jmx?qry=...FSNamesystemState)
-datanode-0 <- namenode-0:9870 http-response FORWARDED
-  (HTTP/1.1 200 2ms)
-```
-This gives the network-layer view of the same requests the OTel Java agent's
-Jetty servlet instrumentation captures as SERVER spans — two independent
-signals, both in the same Grafana stack.
-
-**gRPC OTLP (otel-collector:4317) — policy valid, per-RPC events not surfaced:**
-The `grpc-otlp-visibility` policy is VALID and Cilium's Envoy proxy is in the
-path for all nine JVM pods' OTLP gRPC connections. Traffic shows in Hubble at
-L4 (`to-endpoint FORWARDED TCP Flags: ACK, PSH`) but not as individual
-`http-request` L7 events. Cause: OTLP uses long-lived multiplexed HTTP/2
-connections; Hubble captures flow events at Envoy boundaries but does not emit
-one event per gRPC stream on a multiplexed H2 connection. This is a Hubble
-architectural constraint, not a policy configuration error.
-
-**Policy side-effect fixed (implicit Cilium default-deny):**
-Applying ingress policies to an endpoint causes Cilium to deny all unlisted
-ingress by default. The initial policies (K-2 Kafka, K-3 HTTP) inadvertently
-blocked Prometheus from scraping the JMX exporter ports (7071-7075). Fixed
-by adding explicit L4 allow rules for each JMX port in the same policy that
-covers the L7 port, and adding L4 rules for the HDFS/HBase RPC ports.
+**Infrastructure side-effects from the experiment that benefit the host:**
+- Docker Desktop auto-upgraded from 20.10.17 (2022) to 29.4.1 during the
+  WSL restart needed to enable cgroup v2.
+- `~/.wslconfig` now forces cgroup v2 (harmless to Compose, helpful for
+  future kind/k3d work).
+- kind, helm, cilium-cli, hubble-cli installed via winget (idle, no impact).
 
 ## 2026-04-28 - service-map dashboard: dropdown + drill-in panel
 
