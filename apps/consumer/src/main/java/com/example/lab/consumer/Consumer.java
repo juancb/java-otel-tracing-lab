@@ -24,9 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 import java.util.Properties;
 
 /**
@@ -40,11 +38,19 @@ import java.util.Properties;
  * Long.MAX_VALUE minus epoch millis. This makes per-device scans return the
  * newest readings first without needing a reverse scan.
  *
- * <p>The {@link Chaos#maybe(String)} call before {@code table.put(...)} rolls
- * the chaos dice so latency / errors can be injected on the write path
- * independently of producer / query-client. On a chaos error we skip the
- * batch and don't commit Kafka offsets, so the broker redelivers the
- * batch on next poll — which exercises the consumer-rebalance path nicely.
+ * <p>Puts are issued <em>per-record</em> inside the for-loop, not in a single
+ * batched call afterward. The OTel agent's kafka-clients instrumentation
+ * activates a process span for the duration of each iteration body, so a
+ * synchronous put inside the loop attaches as that span's child and the trace
+ * stays linked from {@code producer.send} through the RegionServer.
+ *
+ * <p>The {@link Chaos#maybe(String)} call before each {@code table.put(...)}
+ * rolls the chaos dice so latency / errors can be injected on the write path
+ * independently of producer / query-client. On a chaos error we break out of
+ * the for-loop and skip the Kafka commit, so the broker redelivers the batch
+ * on next poll — which exercises the consumer-rebalance path nicely. Records
+ * written before the break get re-applied; row-key idempotency makes that
+ * safe.
  */
 public final class Consumer {
 
@@ -95,28 +101,35 @@ public final class Consumer {
                         continue;
                     }
 
+                    // Per-record put inside the for-loop is intentional. The OTel
+                    // agent's kafka-clients instrumentation activates a process span
+                    // for the duration of each iteration body; a put issued here
+                    // attaches as that span's child, and HBase 2.5's native server-
+                    // side OTel continues the trace to the RegionServer. Doing the
+                    // put after the for-loop (batched) loses the parent context and
+                    // produces orphan HBase traces — see docs/CHANGES.md.
                     int wrote = 0;
-                    List<Put> puts = new ArrayList<>(batch.count());
+                    boolean chaosBreak = false;
                     for (ConsumerRecord<String, String> rec : batch) {
                         Put put = toPut(rec);
-                        if (put != null) {
-                            puts.add(put);
-                            wrote++;
-                        }
-                    }
-                    if (!puts.isEmpty()) {
-                        // Roll the chaos dice before the put. Sleeping here
-                        // shows up inside the OTel HBase put span; a thrown
-                        // ChaosException skips this batch *and* skips the
-                        // commit below, so Kafka redelivers on next poll.
-                        try {
-                            Chaos.maybe("consumer.put");
-                            // Batched put: one HBase RPC per region per batch.
-                            table.put(puts);
-                        } catch (Chaos.ChaosException ce) {
-                            LOG.warn("Skipping put due to chaos: {} (Kafka will redeliver)", ce.getMessage());
+                        if (put == null) {
                             continue;
                         }
+                        try {
+                            Chaos.maybe("consumer.put");
+                            table.put(put);
+                            wrote++;
+                        } catch (Chaos.ChaosException ce) {
+                            LOG.warn("Skipping put due to chaos: {} (Kafka will redeliver)", ce.getMessage());
+                            chaosBreak = true;
+                            break;
+                        }
+                    }
+                    if (chaosBreak) {
+                        // Skip commit so Kafka redelivers the entire batch on
+                        // next poll. Records already written before the break
+                        // will be re-applied; row-key idempotency makes that safe.
+                        continue;
                     }
                     kc.commitSync();
                     if (LOG.isDebugEnabled()) {

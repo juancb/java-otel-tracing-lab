@@ -2,6 +2,53 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-05-06 - Consumer: per-record HBase puts (fix consumer→RS trace gap)
+
+A Tempo screenshot exposed a propagation gap: producer→consumer was linking
+correctly via Kafka W3C `traceparent` headers, but the consumer's HBase puts
+were appearing as separate root traces. The Tempo service graph confirmed it
+with a missing `consumer → hbase-regionserver` edge (`query-client → RS`
+showed up fine).
+
+**Root cause** in `apps/consumer/src/main/java/com/example/lab/consumer/Consumer.java`:
+the consumer accumulated `Put`s into a `List<Put>` inside the
+`for (ConsumerRecord rec : batch)` loop and called `table.put(puts)` *after*
+the loop ended. The OTel agent's kafka-clients instrumentation activates a
+`sensor.readings process` span only for the duration of each iteration body —
+by the time the batched `table.put(puts)` ran, no `Context.current()` span
+was active, so the HBase client span started a brand-new root trace. HBase
+2.5's native server-side OTel still produced its `RpcServer.process` etc.
+spans, but they descended from that orphan root.
+
+**Fix:** move `table.put(rec)` inside the for-loop. Each record's put now
+runs while that record's process span is `Context.current()`, so the HBase
+client span attaches as its child and HBase 2.5's RPC tracing continues the
+trace into the RegionServer. The full waterfall is now in one trace ID:
+
+```
+producer: sensor.readings publish
+  consumer: sensor.readings process
+    consumer: hbase.client.put
+      hbase-regionserver: RpcServer.process
+        hbase.pb.ClientService/Mutate
+          WAL.append
+```
+
+**Tradeoffs:**
+
+- HBase RPCs go from ~0.3-1/sec (batched) to ~5/sec (per-record) at default
+  `RATE_PER_SEC=5`. Negligible for a lab; not the right pattern for a high-
+  throughput production consumer (in production, the right answer is a manual
+  span wrapping the batched put with span links to each record's context).
+- Chaos break semantics shift slightly: previously a `ChaosException` skipped
+  the entire batch (no records written). Now records written before the break
+  stay; on Kafka redelivery they get written again. Row keys
+  (`deviceId|reverseTs`) make the cell-level overwrite idempotent for our
+  synthetic data, so this is safe.
+
+The `apps/consumer/.../Consumer.java` Javadoc and inline comment now explain
+the per-record design choice and reference this changelog entry.
+
 ## 2026-04-29 - Removed Kubernetes + Cilium production track
 
 Tried, learned, removed. The `cilium/` directory, `docs/K8S_PROJECTION.md`,
