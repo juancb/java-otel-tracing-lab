@@ -120,11 +120,13 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by (le) (rate(traces_spanmetrics_latency_bucket{service=\"$service\"}[$__rate_interval])))",
+          "exemplar": true,
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "expr": "histogram_quantile(0.99, sum by (le) (rate(traces_spanmetrics_latency_bucket{service=\"$service\"}[$__rate_interval])))",
+          "exemplar": true,
           "legendFormat": "p99",
           "refId": "B"
         }

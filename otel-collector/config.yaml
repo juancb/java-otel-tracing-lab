@@ -62,6 +62,14 @@ exporters:
       insecure: true
     resource_to_telemetry_conversion:
       enabled: true
+    # The exporter forwards exemplars from OTLP histograms automatically when
+    # present. Tempo's metrics_generator emits span-metrics exemplars via its
+    # own remote_write path (see tempo.yaml), which is the primary source of
+    # trace-linked dots on our Grafana panels. Whether the OTel Java agent
+    # itself emits histogram exemplars depends on its
+    # OTEL_METRICS_EXEMPLAR_FILTER setting (default trace_based) and active
+    # sampling (we use always_on, so they're available when the agent does
+    # emit them on a given instrumentation).
   debug:
     verbosity: basic
 
