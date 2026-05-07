@@ -6,8 +6,10 @@ Loki, Grafana) are unchanged. What changes is:
 
 1. **Runtime** — kind/k3d instead of Docker Compose
 2. **CNI** — Cilium instead of the Docker bridge network
-3. **Network observability** — Hubble (bundled with Cilium) adds the L7 view
-   that the OTel Java agent cannot provide
+3. **Network observability** — Hubble (bundled with Cilium) adds HTTP L7 and
+   general flow visibility at the network layer. **Note:** Cilium Kafka L7
+   enforcement (`role: produce/consume`) was removed post-Cilium 1.19 via
+   proxylib removal — see the deprecation note below.
 4. **Agent delivery** — OTel Operator init-container injection instead of
    baked-in `JAVA_TOOL_OPTIONS` in the Dockerfiles
 
@@ -65,12 +67,42 @@ See `docs/ROADMAP.md` §"Production Track" for the staged implementation plan
 
 | Traffic path | Protocol | Cilium L7 | What Hubble shows |
 |---|---|---|---|
-| `producer → kafka` | Kafka binary (TCP:9092) | YES — Envoy Kafka filter | Topic name, operation (produce/fetch), client ID, response code, request latency |
-| `consumer → kafka` | Kafka binary (TCP:9092) | YES | Same; distinguishes produce vs. fetch per topic |
-| `apps → otel-collector` | gRPC / OTLP (TCP:4317) | YES | Service name, gRPC method (`TraceService/Export`), response code |
+| `producer → kafka` | Kafka binary (TCP:9092) | **REMOVED** ⚠ | Was: topic name, operation. Removed in Cilium 1.20 — see deprecation note |
+| `consumer → kafka` | Kafka binary (TCP:9092) | **REMOVED** ⚠ | Same — removed |
+| `apps → otel-collector` | gRPC / OTLP (TCP:4317) | YES (policy valid, events at L4) | gRPC service/method visible in Envoy; per-RPC L7 events not surfaced in Hubble for persistent H2 connections |
 | `apps → otel-collector` | HTTP / OTLP (TCP:4318) | YES | URL path, method, status code |
-| Healthchecks → Jetty UIs | HTTP (TCP:9870/16010/16030) | YES | URL path, status code, latency |
+| Healthchecks → Jetty UIs | HTTP (TCP:9870/16010/16030) | YES | URL path, status code, latency — confirmed working in K-3 |
 | Service discovery | DNS (UDP:53) | YES | Query name, response, TTL |
+
+### Cilium Kafka L7 enforcement: removed in Cilium 1.20
+
+`role: produce` / `role: consume` in `CiliumNetworkPolicy` relied on **proxylib**
+— Cilium's Go extension framework for custom L7 protocol parsers. Proxylib was
+deprecated in Cilium v1.16 and removed post-1.19:
+
+- [PR #43557](https://github.com/cilium/cilium/pull/43557) — removes proxylib
+  and all Kafka-aware `CiliumNetworkPolicy` rules
+- [PR #45644](https://github.com/cilium/cilium/pull/45644) — removes leftover
+  Kafka case branches from Hubble's flow classifier (dead code cleanup)
+- [Issue #44551](https://github.com/cilium/cilium/issues/44551) — removes Kafka
+  as a Hubble CLI export format in v1.20
+
+**Impact on this lab:** We observed the breakage in K-2 — the `kafka-l7` policy
+showed `VALID: True` (API schema still accepts it) but was running on deprecated
+proxylib code, causing DROPS on Kafka 3.8 protocol v9+ Produce requests and
+showing all topics as `''`. The policy has been removed from `cilium/manifests/policies/`.
+
+**Correct approach for Kafka topic observability:**
+- The **OTel Java agent** records the topic name in span attributes for every
+  `KafkaProducer.send()` call. This flows into Tempo → span-metrics → Prometheus
+  → the "OTel Lab — Hubble L7" Grafana dashboard, which shows `sensor.readings`
+  topic rate and latency.
+- For broker-side **enforcement** (allow/deny by topic), the migration path is
+  `CiliumEnvoyConfig` using Envoy's native Kafka filter. This is not implemented
+  in this lab but is the upstream-supported replacement.
+
+**HTTP and gRPC L7 policies (K-3) are unaffected** — they use Envoy natively
+without proxylib and remain the recommended pattern.
 
 ### What Cilium CANNOT see at L7 (permanent gaps)
 

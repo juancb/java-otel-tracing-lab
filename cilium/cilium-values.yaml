@@ -22,6 +22,9 @@ hubble:
   # L7 visibility annotations cause the cilium-agent to redirect matched
   # traffic through the Envoy proxy and emit L7 flow events.
   metrics:
+    # kafka removed: Cilium's Kafka L7 parser relied on proxylib which was
+    # deprecated in v1.16 and is being removed post-1.19 (PR #43557, #45644).
+    # Kafka topic observability is served by OTel span-metrics instead.
     enabled:
       - dns
       - drop
@@ -29,8 +32,7 @@ hubble:
       - flow
       - port-distribution
       - icmp
-      - http
-      - kafka:labelsContext=source_namespace,source_workload,destination_namespace,destination_workload
+      - http:labelsContext=source_namespace,source_workload,destination_namespace,destination_workload,traffic_direction
 
 # Enable the Envoy proxy DaemonSet — required for any L7 policy enforcement
 # (Kafka, HTTP, gRPC). Cilium can ship Envoy embedded in the agent or as a
@@ -45,6 +47,15 @@ operator:
 # IPAM mode that works out of the box with kind.
 ipam:
   mode: kubernetes
+
+# Expose Cilium agent metrics on port 9962 for Prometheus scraping.
+# Without this, the metrics endpoint isn't started and Prometheus gets
+# "connection refused" even though the scrape job is correctly configured.
+prometheus:
+  enabled: true
+  port: 9962
+  serviceMonitor:
+    enabled: false  # we use static scrape_configs, not ServiceMonitor
 
 # Disable features we don't need that add CPU/memory overhead.
 ingressController:

@@ -169,25 +169,37 @@ Hubble UI enabled.
 **What this buys you:** a real CNI environment that matches managed k8s
 (EKS, GKE, AKS all support Cilium). Hubble is the always-on network observer.
 
-### K-2 — Kafka L7 visibility
+### K-2 — Kafka observability (via OTel span-metrics; Cilium Kafka L7 removed)
 
-Enable Cilium's Kafka L7 policy on the `kafka` pod. This uses an Envoy Kafka
-filter — no changes to the broker or the Java apps required.
+**Status: original approach superseded.** The original K-2 plan used
+`CiliumNetworkPolicy` with `role: produce / role: consume` to enable Cilium's
+Kafka L7 filter at the broker. This was found to be broken in Cilium 1.19 and
+is removed in Cilium 1.20:
 
-- Add a `CiliumNetworkPolicy` with `rules.kafka` allow-list (topic name, role:
-  produce / consume) targeting the kafka pod.
-- Verify: `hubble observe --protocol kafka` shows produce/consume events with
-  topic names. The Hubble service map shows `producer → kafka → consumer` with
-  per-topic labels.
+- Cilium's Kafka L7 relied on **proxylib** (Go extension framework for custom
+  L7 parsers), deprecated since v1.16 and removed post-1.19 ([PR #43557](https://github.com/cilium/cilium/pull/43557)).
+- We observed the breakage: the policy showed `VALID: True` but DROPPED Kafka
+  3.8 protocol v9+ Produce requests and rendered all topic names as `''`.
+- The `kafka-l7.yaml` policy has been deleted. `cilium/manifests/policies/`
+  retains only the HTTP and gRPC policies (K-3), which use Envoy natively.
 
-**What this buys you:** broker-side Kafka visibility. The OTel Java agent sees
-the *client* side (KafkaProducer.send span in producer, poll span in consumer).
-Cilium sees the *broker* side — topic-level throughput, latency, and error rate
-without touching the application. These two views are complementary, not
-redundant.
+**What K-2 delivers instead:** the "OTel Lab — Hubble L7" Grafana dashboard
+(`grafana/provisioning/dashboards/hubble-l7.json`), which shows Kafka topic
+observability via OTel span-metrics already flowing through the pipeline:
 
-**Note:** requires PLAINTEXT Kafka (no broker-level TLS). Our current setup
-already uses `PLAINTEXT` — no change needed.
+- `producer | sensor.readings publish` — topic name from KafkaProducer.send()
+  spans, rate and p50/p99 latency.
+- Consumer HBase Put spans, query-client Scan/Get/Increment spans.
+
+**Why the OTel Java agent is the right tool here:** the agent instruments the
+Kafka *client* and records the topic name in the span. That data is already
+in Prometheus via Tempo's `span-metrics` generator. Cilium can observe
+*that* traffic flows on port 9092, but not which topic — the payload
+decoding that would tell it the topic was the proxylib code that is gone.
+
+For broker-side Kafka enforcement by topic in a future production setup, the
+migration path is `CiliumEnvoyConfig` using Envoy's native Kafka filter
+(not proxylib). This is not implemented in this lab.
 
 ### K-3 — gRPC + HTTP L7 visibility
 
