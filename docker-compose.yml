@@ -200,7 +200,7 @@ services:
       interval: 10s
       timeout: 10s
       retries: 30
-      start_period: 30s
+      start_period: 60s
 
   datanode:
     <<: *hadoop-hbase-build
@@ -216,7 +216,7 @@ services:
       - "7075:7075"
     depends_on:
       namenode:
-        condition: service_healthy
+        condition: service_started
     # The DN's HTTP port (9864) comes up immediately, but registration with
     # the NN can lag by 30s+. We ask the NN how many live DataNodes it sees;
     # only succeed when there's at least one.

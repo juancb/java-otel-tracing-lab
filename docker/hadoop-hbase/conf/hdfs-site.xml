@@ -57,4 +57,16 @@
     <name>dfs.permissions.enabled</name>
     <value>false</value>
   </property>
+
+  <!-- Single-node lab setup: lower safemode threshold from 0.999 to 0.5 -->
+  <!-- (blocks in: 0.5*total >= min_datanodes) -->
+  <property>
+    <name>dfs.namenode.safemode.threshold-pct</name>
+    <value>0.5</value>
+  </property>
+  <!-- Don't wait 30s after minimum threshold is met -->
+  <property>
+    <name>dfs.namenode.safemode.extension</name>
+    <value>0</value>
+  </property>
 </configuration>
