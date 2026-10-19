@@ -2,6 +2,79 @@
 
 A chronological log of what was built and why. Newest entries first.
 
+## 2026-10-18 - Golden signals: USE + RED percentiles for every component
+
+Started from one question: why is the NameNode's
+`rpcQueueTime<N>s99thPercentileLatency` (documented in Hadoop's Metrics
+guide) missing? Hadoop computes **no** percentile metrics by default; the
+attribute did not exist in JMX at all. Fixing that grew into covering the
+superset of USE (utilization, saturation, errors), RED (rate, errors,
+duration) and Google's Four Golden Signals (latency, traffic, errors,
+saturation) for every component.
+
+**HDFS** (`docker/hadoop-hbase/conf/hdfs-site.xml`, image rebuild needed):
+`rpc.metrics.quantile.enable=true`, `rpc.metrics.percentiles.intervals=60`,
+`dfs.metrics.percentiles.intervals=60` and
+`dfs.datanode.fileio.profiling.sampling.percentage=100`. These add 60 s
+rolling 50/75/90/95/99th percentiles for RPC queue/processing/lock-wait
+time (NN and DN), NameNode edit-log `Syncs`, DataNode packet-ack round trip,
+flush and fsync (ns), and per-volume file IO latency.
+
+**JMX exporter rules** (`jmx-exporter/*.yaml`):
+
+- Hadoop: `hadoop_rpc_latency_ms{phase,stat}`, per-method RPC rate,
+  `hadoop_rpc_exceptions_total{exception}`, slow calls, auth failures,
+  NameNode lock queue, live/dead/stale DNs, replication backlog, DataNode
+  xceivers, network and IO errors, dataset capacity, JVM log ERROR/FATAL counts.
+- HBase: per-op latency (`hbase_regionserver_op_latency_ms{op,stat}`,
+  Get/Put/Scan/Increment/...), per-table latency, IPC queue vs process time,
+  WAL and HDFS IO latency, RPC exceptions by class, slow-op counts,
+  flush/compaction queues, blocked requests, block cache, Master region
+  transitions and assignment failures.
+- Kafka: p75/p95/p99.9/Max on every RequestMetrics histogram,
+  `kafka_network_request_errorspersec{api,error}`, network-processor idle,
+  request/response queue size, purgatory size, log flush latency.
+
+**Container USE**: new `cadvisor` service (v0.52.1, port 8080) and
+`cadvisor` scrape job, kept to this compose project, with
+`container_pressure_{cpu,memory,io}_*` PSI metrics as the direct saturation
+signal. Verified on Docker Desktop (WSL2, cgroup v2).
+
+**Dashboard**: `grafana/provisioning/dashboards/golden-signals.json`
+(`otel-lab-golden`), 55 panels in 8 rows: apps (trace-derived RED from
+Tempo span-metrics and the service graph, plus Kafka client lag, latency
+and errors), Kafka broker, HBase RegionServer, HBase Master, NameNode,
+DataNode, JVMs, containers. Each row reads Traffic, Errors, Latency,
+Saturation, Utilization left to right.
+
+**Pre-existing exporter bugs fixed along the way:**
+
+- Every HBase latency rule (`processCallTime_*`, `queueCallTime_*`,
+  `syncTime_*`, `appendTime_*`) used lowerCamelCase, but HBase 2.5 exposes
+  `ProcessCallTime_99th_percentile` etc. Those series never existed, so the
+  "HBase RS RPC p99" and WAL sync panels on `jmx-services.json` were empty.
+  The panels now use the new families.
+- The exporter compiles each pattern as `^.*(?:pattern).*$`, so a list
+  entry also captures any attribute it prefixes. `CapacityUsed` matched
+  `CapacityUsedGB` and `CapacityUsedNonDFS` (three series under one name),
+  and `ritCount` swallowed `ritCountOverThreshold`. List rules now end in
+  `(?!\w)`.
+- The Hadoop rules' `service` label collided with the Prometheus target
+  label and was being renamed to `exported_service`. It is now `daemon`.
+
+**Gotchas:**
+
+- Recreating the NameNode makes HBase Master and RegionServer abort
+  (they exit when HDFS goes away). Restart HDFS first, then HBase.
+- Hadoop, HBase and Kafka percentiles are in-process reservoir gauges
+  (`stat="99thPercentile"`), not Prometheus histograms; they cannot be
+  aggregated across instances. Only the trace-derived panels use real
+  `_bucket` histograms.
+- HBase latencies are whole milliseconds; at lab load most read 0-2 ms.
+- Exporter `COUNTER` rules get a `_total` suffix, so HBase's aggregate
+  `exceptions` counter is exported as `*_ipc_exceptions_all_total` to keep
+  it out of the per-exception family.
+
 ## 2026-05-06 - Consumer: per-record HBase puts (fix consumer→RS trace gap)
 
 A Tempo screenshot exposed a propagation gap: producer→consumer was linking
@@ -48,6 +121,15 @@ producer: sensor.readings publish
 
 The `apps/consumer/.../Consumer.java` Javadoc and inline comment now explain
 the per-record design choice and reference this changelog entry.
+
+**Also:**
+
+- Fixed the empty "Kafka requests/sec by API" panel in `jmx-services.json`.
+  Kafka's `RequestsPerSec` MBean carries an extra `version=N` key (one per
+  API version), so the generic `RequestMetrics` rule in
+  `jmx-exporter/kafka.yaml` never matched it. Added a dedicated rule that
+  exports `kafka_network_request_requestspersec{api,version,stat}`; the panel
+  now queries `sum by (api) (...)` to roll versions up.
 
 ## 2026-04-29 - Removed Kubernetes + Cilium production track
 

@@ -44,3 +44,23 @@ scrape_configs:
       - targets: [ 'datanode:7075' ]
         labels:
           service: hadoop-datanode
+
+  # --- Container USE metrics (cAdvisor) ------------------------------------
+  # Per-container CPU / memory / network / disk IO + PSI pressure stalls.
+  # cAdvisor sees every container on the Docker host; keep only this
+  # compose project's, and expose the compose service name as `service`
+  # (compose names: namenode, datanode, kafka, hbase-regionserver, ...).
+  - job_name: cadvisor
+    scrape_interval: 15s
+    static_configs:
+      - targets: [ 'cadvisor:8080' ]
+    metric_relabel_configs:
+      # Keep machine_* (cores, memory: the utilization denominators) and
+      # this project's containers; drop other projects and raw cgroups.
+      - source_labels: [ __name__, container_label_com_docker_compose_project ]
+        regex: 'machine_.*;.*|.*;otel-lab'
+        action: keep
+      - source_labels: [ container_label_com_docker_compose_service ]
+        target_label: service
+      - regex: container_label_com_docker_compose_(project|service)
+        action: labeldrop

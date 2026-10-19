@@ -74,6 +74,12 @@ Pick the `Tempo` datasource and search by service name (`producer`,
 `consumer`, `hbase-master`, `hbase-regionserver`, `hadoop-namenode`,
 `hadoop-datanode`).
 
+For traffic, errors, latency percentiles, saturation and utilization of
+every component (USE + RED + the Four Golden Signals), open the
+**OTel Lab — Golden Signals (USE + RED)** dashboard. Its container row
+comes from cAdvisor (UI at http://localhost:8080), including Linux
+pressure-stall (PSI) saturation metrics.
+
 The producer starts emitting synthetic sensor telemetry to the
 `sensor.readings` topic shortly after startup. The consumer auto-creates
 the HBase table `sensor_readings` and writes rows keyed by

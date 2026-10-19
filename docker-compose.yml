@@ -86,6 +86,35 @@ services:
       timeout: 3s
       retries: 20
 
+  # Per-container USE metrics (CPU, memory, network, disk IO) plus Linux
+  # pressure-stall information (PSI): container_pressure_{cpu,memory,io}_*
+  # is the direct "saturation" signal - time tasks spent waiting on a
+  # resource. Works on Docker Desktop (WSL2, cgroup v2). Scraped by the
+  # `cadvisor` job in prometheus.yml; UI at http://localhost:8080.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    container_name: cadvisor
+    privileged: true
+    devices:
+      - /dev/kmsg
+    command:
+      - "--docker_only=true"
+      - "--housekeeping_interval=10s"
+      # Only name/image labels, plus the compose project/service labels
+      # so Prometheus can keep just this lab's containers.
+      - "--store_container_labels=false"
+      - "--whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service"
+      # `disk` (per-container du) is expensive and not a USE signal; diskIO is.
+      - "--enable_metrics=cpu,cpuLoad,memory,network,diskIO,oom_event,pressure"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8080:8080"
+
   grafana:
     image: grafana/grafana:11.2.0
     container_name: grafana

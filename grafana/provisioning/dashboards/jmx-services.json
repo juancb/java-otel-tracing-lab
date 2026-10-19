@@ -19,7 +19,7 @@
       "id": 101,
       "targets": [{
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "expr": "kafka_network_request_requestspersec{stat=\"OneMinuteRate\"}",
+        "expr": "sum by (api) (kafka_network_request_requestspersec{stat=\"OneMinuteRate\"})",
         "legendFormat": "{{api}}", "refId": "A"
       }],
       "title": "Kafka requests/sec by API",
@@ -106,7 +106,7 @@
       "id": 203,
       "targets": [{
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "expr": "hbase_regionserver_ipc_processcalltime_99th_percentile", "legendFormat": "p99 (ms)", "refId": "A"
+        "expr": "hbase_regionserver_ipc_calltime_ms{phase=\"ProcessCallTime\", stat=\"99th_percentile\"}", "legendFormat": "p99 (ms)", "refId": "A"
       }],
       "title": "HBase RS RPC p99 process time",
       "type": "timeseries"
@@ -121,7 +121,7 @@
         {"datasource": {"type": "prometheus", "uid": "prometheus"},
          "expr": "rate(hbase_regionserver_wal_appendcount[1m])", "legendFormat": "appends/sec", "refId": "A"},
         {"datasource": {"type": "prometheus", "uid": "prometheus"},
-         "expr": "hbase_regionserver_wal_synctime_99th_percentile", "legendFormat": "sync p99 (ms)", "refId": "B"}
+         "expr": "hbase_regionserver_wal_latency_ms{job=\"hbase-regionserver\", op=\"SyncTime\", stat=\"99th_percentile\"}", "legendFormat": "sync p99 (ms)", "refId": "B"}
       ],
       "title": "HBase RS WAL appends + sync p99",
       "type": "timeseries"
