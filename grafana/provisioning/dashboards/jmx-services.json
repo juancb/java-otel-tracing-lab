@@ -19,7 +19,7 @@
       "id": 101,
       "targets": [{
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "expr": "kafka_network_request_requestspersec{stat=\"OneMinuteRate\"}",
+        "expr": "sum by (api) (kafka_network_request_requestspersec{stat=\"OneMinuteRate\"})",
         "legendFormat": "{{api}}", "refId": "A"
       }],
       "title": "Kafka requests/sec by API",

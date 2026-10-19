@@ -16,6 +16,18 @@ rules:
       stat: "$3"
     type: GAUGE
 
+  # RequestsPerSec carries an extra `version` key (one MBean per API version:
+  # kafka.network:type=RequestMetrics,name=RequestsPerSec,request=Produce,version=9),
+  # so it never matches the rule above. Export it separately; dashboards roll
+  # versions up with `sum by (api) (...)`.
+  - pattern: kafka.network<type=RequestMetrics, name=RequestsPerSec, request=(\w+), version=(\d+)><>(Count|OneMinuteRate|MeanRate)
+    name: kafka_network_request_requestspersec
+    labels:
+      api: "$1"
+      version: "$2"
+      stat: "$3"
+    type: GAUGE
+
   # --- Broker-level topic metrics (rolled up across topics) --------------
   - pattern: kafka.server<type=BrokerTopicMetrics, name=(\w+)><>(Count|OneMinuteRate|FiveMinuteRate)
     name: kafka_server_brokertopic_$1
