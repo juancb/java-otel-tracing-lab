@@ -1,33 +1,120 @@
 # JMX → Prometheus exporter rules for HBase Master and RegionServer.
 # HBase exposes metrics under Hadoop:service=HBase,name=...
+#
+# Signal coverage (USE + RED + Four Golden Signals):
+#   Traffic/Rate  hbase_regionserver_op_latency_ms{stat="num_ops"},
+#                 hbase_regionserver_rpc*requestcount, totalrequestcount
+#   Errors        hbase_{regionserver,master}_ipc_exceptions_total{exception}
+#                 (+ _ipc_exceptions_all_total = HBase's own aggregate),
+#                 hbase_regionserver_slow*count, checkmutatefailedcount,
+#                 hbase_master_*failedcount
+#   Latency       hbase_regionserver_op_latency_ms{op,stat}       (Get/Put/Scan...)
+#                 hbase_regionserver_table_latency_ms{table,op,stat}
+#                 hbase_{regionserver,master}_ipc_calltime_ms{phase,stat}
+#                 hbase_regionserver_wal_latency_ms{op,stat}, _fs_latency_ms
+#   Saturation    ipc queuesize / numcallsin*queue / numactivehandler,
+#                 flush/compaction queue length, blockedrequestcount,
+#                 updatesblockedtime, jvm pause counts, master ritcount
+#   Utilization   memstore + block cache size/free, block cache hit %
+#
+# HBase latency histograms are in whole MILLISECONDS and are decaying
+# reservoirs inside the JVM (stat="median", "99th_percentile", "max", ...),
+# not Prometheus histograms. At this lab's load most values read 0-2 ms.
+#
+# NOTE: HBase 2.5 attribute names are case-sensitive and the histogram ones
+# are UpperCamelCase (ProcessCallTime_99th_percentile, SyncTime_mean). The
+# previous rules used processCallTime_* / syncTime_* and silently matched
+# nothing. Rule order matters: first match wins per attribute.
 
 lowercaseOutputName: true
 lowercaseOutputLabelNames: true
 
 rules:
   # --- Master cluster metrics (master only) ------------------------------
-  - pattern: Hadoop<service=HBase, name=Master, sub=Server><>(numRegionServers|numDeadRegionServers|clusterRequests|averageLoad)
+  - pattern: Hadoop<service=HBase, name=Master, sub=Server><>(numRegionServers|numDeadRegionServers|numDrainingRegionServers|clusterRequests|averageLoad|ServerCrashFailedCount)(?!\w)
     name: hbase_master_$1
     type: GAUGE
 
+  # --- Master region assignment: saturation (RIT) + errors ---------------
+  - pattern: Hadoop<service=HBase, name=Master, sub=AssignmentManager><>(ritCount|ritCountOverThreshold|ritOldestAge|\w+FailedCount)(?!\w)
+    name: hbase_master_assignment_$1
+    type: GAUGE
+
+  # --- RegionServer per-operation latency + rate -------------------------
+  # Put_99th_percentile -> hbase_regionserver_op_latency_ms{op="Put", stat="99th_percentile"}
+  # stat="num_ops" is the cumulative op count: rate() it for traffic.
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=Server><>(Get|Put|PutBatch|Delete|DeleteBatch|Increment|Append|ScanTime|CheckAndPut|CheckAndDelete|CheckAndMutate)_(num_ops|max|mean|median|75th_percentile|90th_percentile|95th_percentile|99th_percentile|99\.9th_percentile)(?!\w)
+    name: hbase_regionserver_op_latency_ms
+    labels:
+      op: "$1"
+      stat: "$2"
+    type: GAUGE
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=Server><>(FlushTime|CompactionTime|MajorCompactionTime|SplitTime|PauseTimeWithGc|PauseTimeWithoutGc)_(num_ops|max|mean|median|99th_percentile)(?!\w)
+    name: hbase_regionserver_internal_latency_ms
+    labels:
+      op: "$1"
+      stat: "$2"
+    type: GAUGE
+
   # --- RegionServer Server metrics ---------------------------------------
-  - pattern: Hadoop<service=HBase, name=RegionServer, sub=Server><>(regionCount|storeCount|storeFileCount|storeFileSize|memStoreSize|hlogFileCount|totalRequestCount|readRequestCount|writeRequestCount)
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=Server><>(regionCount|storeCount|storeFileCount|storeFileSize|memStoreSize|memStoreHeapSize|hlogFileCount|totalRequestCount|readRequestCount|writeRequestCount|rpcGetRequestCount|rpcScanRequestCount|rpcMultiRequestCount|rpcMutateRequestCount|activeScanners|flushQueueLength|compactionQueueLength|splitQueueLength|blockedRequestCount|updatesBlockedTime|blockCacheSize|blockCacheFreeSize|blockCacheCount|blockCacheHitCount|blockCacheMissCount|blockCacheEvictionCount|blockCacheExpressHitPercent|percentFilesLocal|slowGetCount|slowPutCount|slowDeleteCount|slowIncrementCount|slowAppendCount|checkMutateFailedCount|scannerLeaseExpiredCount|pauseInfoThresholdExceeded|pauseWarnThresholdExceeded)(?!\w)
     name: hbase_regionserver_$1
     type: GAUGE
 
-  # --- IPC (RPC handler queue, processing time) --------------------------
-  - pattern: Hadoop<service=HBase, name=RegionServer, sub=IPC><>(numActiveHandler|numCallsInGeneralQueue|numCallsInPriorityQueue|queueSize|processCallTime_mean|processCallTime_99th_percentile|queueCallTime_mean|queueCallTime_99th_percentile)
-    name: hbase_regionserver_ipc_$1
+  # --- Per-table latency + rate (RegionServer) ---------------------------
+  # Namespace_default_table_sensor_readings_metric_putTime_99th_percentile
+  #   -> hbase_regionserver_table_latency_ms{namespace="default", table="sensor_readings", op="putTime", stat="99th_percentile"}
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=TableLatencies><>Namespace_(\w+?)_table_(\w+)_metric_(getTime|putTime|putBatchTime|deleteTime|deleteBatchTime|scanTime|incrementTime|appendTime|checkAndPutTime|checkAndDeleteTime|checkAndMutateTime)_(num_ops|max|mean|median|95th_percentile|99th_percentile|99\.9th_percentile)(?!\w)
+    name: hbase_regionserver_table_latency_ms
+    labels:
+      namespace: "$1"
+      table: "$2"
+      op: "$3"
+      stat: "$4"
     type: GAUGE
 
-  - pattern: Hadoop<service=HBase, name=Master, sub=IPC><>(numActiveHandler|numCallsInGeneralQueue|queueSize|processCallTime_mean|processCallTime_99th_percentile)
-    name: hbase_master_ipc_$1
+  # --- IPC: call latency, errors, saturation (RegionServer + Master) -----
+  - pattern: Hadoop<service=HBase, name=(RegionServer|Master), sub=IPC><>(ProcessCallTime|QueueCallTime|TotalCallTime)_(num_ops|max|mean|median|75th_percentile|90th_percentile|95th_percentile|99th_percentile|99\.9th_percentile)(?!\w)
+    name: hbase_$1_ipc_calltime_ms
+    labels:
+      phase: "$2"
+      stat: "$3"
+    type: GAUGE
+  - pattern: Hadoop<service=HBase, name=(RegionServer|Master), sub=IPC><>exceptions\.(\w+)(?!\w)
+    name: hbase_$1_ipc_exceptions
+    labels:
+      exception: "$2"
+    type: COUNTER
+  # COUNTER rules get a `_total` suffix from the exporter, so the aggregate
+  # needs its own name or it lands in the per-exception family above.
+  - pattern: Hadoop<service=HBase, name=(RegionServer|Master), sub=IPC><>exceptions(?![\w.])
+    name: hbase_$1_ipc_exceptions_all
+    type: COUNTER
+  - pattern: Hadoop<service=HBase, name=(RegionServer|Master), sub=IPC><>(numActiveHandler|numActiveGeneralHandler|numActivePriorityHandler|numCallsInGeneralQueue|numCallsInPriorityQueue|numCallsInReadQueue|numCallsInWriteQueue|numCallsInScanQueue|queueSize|numOpenConnections|numGeneralCallsDropped|numLifoModeSwitches|receivedBytes|sentBytes|authenticationFailures|authorizationFailures)(?!\w)
+    name: hbase_$1_ipc_$2
     type: GAUGE
 
-  # --- WAL append metrics (RegionServer) ---------------------------------
-  - pattern: Hadoop<service=HBase, name=RegionServer, sub=WAL><>(appendCount|appendTime_mean|appendTime_99th_percentile|syncTime_mean|syncTime_99th_percentile)
+  # --- WAL latency + appends (RegionServer; Master hosts a WAL too) ------
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=WAL><>(SyncTime|AppendTime)_(num_ops|max|mean|median|95th_percentile|99th_percentile|99\.9th_percentile)(?!\w)
+    name: hbase_regionserver_wal_latency_ms
+    labels:
+      op: "$1"
+      stat: "$2"
+    type: GAUGE
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=WAL><>(appendCount|slowAppendCount|slowSyncRollRequest)(?!\w)
     name: hbase_regionserver_wal_$1
     type: GAUGE
+
+  # --- HDFS IO as seen from HBase (pread / write latency, checksum errors) -
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=IO><>(FsReadTime|FsPReadTime|FsWriteTime)_(num_ops|max|mean|median|99th_percentile)(?!\w)
+    name: hbase_regionserver_fs_latency_ms
+    labels:
+      op: "$1"
+      stat: "$2"
+    type: GAUGE
+  - pattern: Hadoop<service=HBase, name=RegionServer, sub=IO><>fsChecksumFailureCount
+    name: hbase_regionserver_fs_checksum_failures
+    type: COUNTER
 
   # --- JVM ----------------------------------------------------------------
   - pattern: java.lang<type=Memory><(\w+)Memory>Used

@@ -1,32 +1,145 @@
 # JMX → Prometheus exporter rules for HDFS NameNode and DataNode.
+#
+# Signal coverage (USE + RED + Four Golden Signals):
+#   Traffic/Rate  hadoop_rpc_rpcqueuetimenumops, hadoop_rpc_method_numops{method},
+#                 hadoop_namenode_*ops, hadoop_datanode_bytes{read,written}
+#   Errors        hadoop_rpc_exceptions_total{exception}, hadoop_rpc_rpcslowcalls,
+#                 hadoop_rpc_*failures, hadoop_datanode_datanodenetworkerrors,
+#                 hadoop_datanode_volume_totalfileioerrors, *missing/corrupt blocks
+#   Latency       hadoop_rpc_latency_ms{phase,stat}            (percentiles)
+#                 hadoop_namenode_op_latency_ms{op,stat}       (edit-log Syncs etc.)
+#                 hadoop_datanode_op_latency_ns{op,stat}       (packet ack, flush, fsync)
+#                 hadoop_datanode_volume_io_latency_ms{op,stat}
+#   Saturation    hadoop_rpc_callqueuelength, hadoop_namenode_lockqueuelength,
+#                 hadoop_datanode_info_xceivercount, pending/under-replicated blocks
+#   Utilization   capacity used/total, xceivers vs dfs.datanode.max.transfer.threads
+#
+# The percentile families only exist because hdfs-site.xml sets
+# rpc.metrics.quantile.enable / rpc.metrics.percentiles.intervals /
+# dfs.metrics.percentiles.intervals. Hadoop quantiles are rolling-window
+# gauges (stat="50thPercentile".."99thPercentile", interval="60s"), not
+# Prometheus histograms, so they cannot be re-aggregated across instances.
+#
+# Rule order matters: the exporter uses the FIRST rule that matches each
+# attribute, so the specific percentile rules come before the generic ones.
 
 lowercaseOutputName: true
 lowercaseOutputLabelNames: true
 
 rules:
+  # --- RPC latency percentiles (NN :8020, DN IPC :9867) ------------------
+  # RpcQueueTime60s99thPercentileLatency -> hadoop_rpc_latency_ms{phase="RpcQueueTime", interval="60s", stat="99thPercentile"}
+  - pattern: Hadoop<service=(\w+), name=RpcActivityForPort(\d+)><>(RpcQueueTime|RpcProcessingTime|RpcLockWaitTime)(\d+)s(\d+)thPercentileLatency
+    name: hadoop_rpc_latency_ms
+    labels:
+      daemon: "$1"
+      port: "$2"
+      phase: "$3"
+      interval: "$4s"
+      stat: "$5thPercentile"
+    type: GAUGE
+
+  # --- RPC errors by exception class, and per-method rate/avg latency ----
+  # RpcDetailedActivity mixes methods (GetBlockLocationsNumOps) with the
+  # exceptions they threw (FileNotFoundExceptionNumOps).
+  - pattern: Hadoop<service=(\w+), name=RpcDetailedActivityForPort(\d+)><>(\w+Exception)NumOps
+    name: hadoop_rpc_exceptions
+    labels:
+      daemon: "$1"
+      port: "$2"
+      exception: "$3"
+    type: COUNTER
+  - pattern: Hadoop<service=(\w+), name=RpcDetailedActivityForPort(\d+)><>(\w+)(?<!Exception)(NumOps|AvgTime)
+    name: hadoop_rpc_method_$4
+    labels:
+      daemon: "$1"
+      port: "$2"
+      method: "$3"
+    type: GAUGE
+
+  # --- NameNode op latency percentiles (edit-log Syncs, block reports) ---
+  - pattern: Hadoop<service=NameNode, name=NameNodeActivity><>(\w+?)(\d+)s(\d+)thPercentileLatency
+    name: hadoop_namenode_op_latency_ms
+    labels:
+      op: "$1"
+      interval: "$2s"
+      stat: "$3thPercentile"
+    type: GAUGE
+
+  # --- NameNode traffic: namespace operations ----------------------------
+  - pattern: Hadoop<service=NameNode, name=NameNodeActivity><>(TotalFileOps|CreateFileOps|FileInfoOps|GetListingOps|DeleteFileOps|AddBlockOps|GetBlockLocations|FilesCreated|FilesDeleted|FilesRenamed|TransactionsNumOps|TransactionsAvgTime|SyncsNumOps|SyncsAvgTime)(?!\w)
+    name: hadoop_namenode_$1
+    type: GAUGE
+
   # --- NameNode FS state -------------------------------------------------
-  - pattern: Hadoop<service=NameNode, name=FSNamesystem><>(BlocksTotal|FilesTotal|CapacityTotal|CapacityUsed|CapacityRemaining|MissingBlocks|UnderReplicatedBlocks|CorruptBlocks)
+  # Utilization (capacity), saturation (lock queue, pending/low-redundancy
+  # blocks, load) and errors (missing/corrupt blocks, dead DNs, volume failures).
+  - pattern: Hadoop<service=NameNode, name=FSNamesystem><>(BlocksTotal|FilesTotal|CapacityTotal|CapacityUsed|CapacityRemaining|MissingBlocks|UnderReplicatedBlocks|CorruptBlocks|NumLiveDataNodes|NumDeadDataNodes|StaleDataNodes|VolumeFailuresTotal|ExpiredHeartbeats|PendingReplicationBlocks|PendingDeletionBlocks|LowRedundancyBlocks|LockQueueLength|TotalLoad|NumActiveClients|NumFilesUnderConstruction|ReadLockLongHoldCount|WriteLockLongHoldCount|TransactionsSinceLastCheckpoint)(?!\w)
     name: hadoop_namenode_$1
     type: GAUGE
 
   # --- NameNode info -----------------------------------------------------
-  - pattern: Hadoop<service=NameNode, name=NameNodeInfo><>(Threads|FreeHeapMemory|MaxHeapMemory)
+  - pattern: Hadoop<service=NameNode, name=NameNodeInfo><>(Threads|FreeHeapMemory|MaxHeapMemory)(?!\w)
     name: hadoop_namenode_info_$1
     type: GAUGE
 
   # --- RPC processing time / queue (both NN and DN) ----------------------
-  - pattern: Hadoop<service=(\w+), name=RpcActivityForPort(\d+)><>(RpcQueueTimeAvgTime|RpcProcessingTimeAvgTime|RpcQueueTimeNumOps|RpcProcessingTimeNumOps|NumOpenConnections|CallQueueLength)
+  # Rate (NumOps, TotalRequests), avg latency, saturation (CallQueueLength,
+  # connections) and errors (slow calls, auth failures, backoff, drops).
+  - pattern: Hadoop<service=(\w+), name=RpcActivityForPort(\d+)><>(RpcQueueTimeAvgTime|RpcProcessingTimeAvgTime|RpcQueueTimeNumOps|RpcProcessingTimeNumOps|RpcLockWaitTimeAvgTime|NumOpenConnections|CallQueueLength|TotalRequests|ReceivedBytes|SentBytes|RpcSlowCalls|RpcClientBackoff|RpcAuthenticationFailures|RpcAuthorizationFailures|NumDroppedConnections)(?!\w)
     name: hadoop_rpc_$3
     labels:
-      service: "$1"
+      daemon: "$1"
       port: "$2"
     type: GAUGE
 
-  # --- DataNode block ops -------------------------------------------------
-  - pattern: Hadoop<service=DataNode, name=DataNodeActivity-(.*?)><>(BlocksRead|BlocksWritten|BlocksReplicated|BytesRead|BytesWritten|ReadsFromLocalClient|ReadsFromRemoteClient|WritesFromLocalClient|WritesFromRemoteClient)
+  # --- DataNode op latency percentiles (nanoseconds) ----------------------
+  # PacketAckRoundTripTimeNanos = write-pipeline latency as the client sees
+  # it; FlushNanos / FsyncNanos = local disk; SendDataPacket* = read path.
+  - pattern: Hadoop<service=DataNode, name=DataNodeActivity-(.*?)><>(\w+Nanos)(\d+)s(\d+)thPercentileLatency
+    name: hadoop_datanode_op_latency_ns
+    labels:
+      datanode: "$1"
+      op: "$2"
+      interval: "$3s"
+      stat: "$4thPercentile"
+    type: GAUGE
+
+  # --- DataNode block ops, errors, saturation -----------------------------
+  - pattern: Hadoop<service=DataNode, name=DataNodeActivity-(.*?)><>(BlocksRead|BlocksWritten|BlocksReplicated|BytesRead|BytesWritten|ReadsFromLocalClient|ReadsFromRemoteClient|WritesFromLocalClient|WritesFromRemoteClient|ReadBlockOpNumOps|ReadBlockOpAvgTime|WriteBlockOpNumOps|WriteBlockOpAvgTime|HeartbeatsAvgTime|PacketAckRoundTripTimeNanosAvgTime|DatanodeNetworkErrors|BlockVerificationFailures|DataNodeActiveXceiversCount|DataNodePacketResponderCount)(?!\w)
     name: hadoop_datanode_$2
     labels:
       datanode: "$1"
+    type: GAUGE
+
+  # --- DataNode per-volume file IO (needs fileio profiling, see hdfs-site) -
+  - pattern: Hadoop<service=DataNode, name=DataNodeVolume-(.*?)><>(\w+)Latency(\d+)s(\d+)thPercentileLatency
+    name: hadoop_datanode_volume_io_latency_ms
+    labels:
+      volume: "$1"
+      op: "$2"
+      interval: "$3s"
+      stat: "$4thPercentile"
+    type: GAUGE
+  - pattern: Hadoop<service=DataNode, name=DataNodeVolume-(.*?)><>(TotalFileIoErrors|TotalDataFileIos|TotalMetadataOperations)(?!\w)
+    name: hadoop_datanode_volume_$2
+    labels:
+      volume: "$1"
+    type: GAUGE
+
+  # --- DataNode storage utilization + transfer-thread saturation ----------
+  - pattern: Hadoop<service=DataNode, name=FSDatasetState><>(Capacity|DfsUsed|Remaining|NumFailedVolumes)(?!\w)
+    name: hadoop_datanode_dataset_$1
+    type: GAUGE
+  - pattern: Hadoop<service=DataNode, name=DataNodeInfo><>(XceiverCount|XmitsInProgress|ActiveTransferThreadCount)(?!\w)
+    name: hadoop_datanode_info_$1
+    type: GAUGE
+
+  # --- Hadoop JvmMetrics: logged errors + GC overhead ---------------------
+  - pattern: Hadoop<service=(\w+), name=JvmMetrics><>(LogError|LogFatal|LogWarn|GcTimePercentage|GcNumWarnThresholdExceeded|ThreadsBlocked)(?!\w)
+    name: hadoop_jvm_$2
+    labels:
+      daemon: "$1"
     type: GAUGE
 
   # --- JVM ----------------------------------------------------------------

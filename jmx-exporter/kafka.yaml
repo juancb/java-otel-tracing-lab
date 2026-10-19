@@ -2,6 +2,22 @@
 # Captures the metrics you'd reach for first when debugging a slow broker:
 # request rate by API key, request handler queue, network processor avg
 # idle, replica fetcher lag, log flush stats, JVM basics.
+#
+# Signal coverage (USE + RED + Four Golden Signals):
+#   Traffic/Rate  kafka_network_request_requestspersec{api}, bytes/messages in/out
+#   Errors        kafka_network_request_errorspersec{api,error} (error="NONE" is
+#                 the success count, so error ratio = non-NONE / all),
+#                 failed produce/fetch requests per sec
+#   Latency       kafka_network_request_totaltimems{api,stat} plus its phases
+#                 (requestqueuetimems, localtimems, remotetimems,
+#                 responsequeuetimems, responsesendtimems), kafka_log_flush_time_ms
+#   Saturation    request/network-processor idle %, request/response queue
+#                 size, purgatory size, under-replicated / under-min-ISR partitions
+#   Utilization   1 - idle % for handler and network threads
+#
+# Kafka's percentiles (stat="50thPercentile".."999thPercentile") come from
+# Yammer histograms with an exponentially-decaying reservoir inside the broker:
+# they are per-broker gauges, not Prometheus histograms.
 
 lowercaseOutputName: true
 lowercaseOutputLabelNames: true
@@ -9,10 +25,19 @@ lowercaseOutputLabelNames: true
 rules:
   # --- Per-API request metrics -------------------------------------------
   # kafka.network:type=RequestMetrics,name=...,request=Produce|Fetch|...
-  - pattern: kafka.network<type=RequestMetrics, name=(\w+), request=(\w+)><>(Count|OneMinuteRate|MeanRate|Mean|50thPercentile|99thPercentile)
+  - pattern: kafka.network<type=RequestMetrics, name=(\w+), request=(\w+)><>(Count|OneMinuteRate|MeanRate|Mean|Max|50thPercentile|75thPercentile|95thPercentile|99thPercentile|999thPercentile)
     name: kafka_network_request_$1
     labels:
       api: "$2"
+      stat: "$3"
+    type: GAUGE
+
+  # Errors by API and error code. One MBean per (request, error) pair seen.
+  - pattern: kafka.network<type=RequestMetrics, name=ErrorsPerSec, request=(\w+), error=(\w+)><>(Count|OneMinuteRate)
+    name: kafka_network_request_errorspersec
+    labels:
+      api: "$1"
+      error: "$2"
       stat: "$3"
     type: GAUGE
 
@@ -54,6 +79,30 @@ rules:
   # backed up" signal). 1.0 = 100% idle, < 0.3 = saturated.
   - pattern: kafka.server<type=KafkaRequestHandlerPool, name=RequestHandlerAvgIdlePercent><>(OneMinuteRate|MeanRate)
     name: kafka_server_request_handler_avg_idle_percent
+    labels:
+      stat: "$1"
+    type: GAUGE
+
+  # --- Network threads + request channel (saturation) --------------------
+  # Network processor idle: 1.0 = idle, sustained < 0.3 = network threads
+  # saturated. Request queue = requests waiting for a handler thread.
+  - pattern: kafka.network<type=SocketServer, name=NetworkProcessorAvgIdlePercent><>Value
+    name: kafka_network_processor_avg_idle_percent
+    type: GAUGE
+  - pattern: kafka.network<type=RequestChannel, name=(RequestQueueSize|ResponseQueueSize)><>Value
+    name: kafka_network_$1
+    type: GAUGE
+
+  # --- Purgatory: requests parked waiting on acks=all / fetch.min.bytes ---
+  - pattern: kafka.server<type=DelayedOperationPurgatory, name=(PurgatorySize|NumDelayedOperations), delayedOperation=(\w+)><>Value
+    name: kafka_server_purgatory_$1
+    labels:
+      operation: "$2"
+    type: GAUGE
+
+  # --- Log flush latency (disk) ------------------------------------------
+  - pattern: kafka.log<type=LogFlushStats, name=LogFlushRateAndTimeMs><>(Count|OneMinuteRate|MeanRate|Mean|Max|50thPercentile|95thPercentile|99thPercentile|999thPercentile)(?!\w)
+    name: kafka_log_flush_time_ms
     labels:
       stat: "$1"
     type: GAUGE

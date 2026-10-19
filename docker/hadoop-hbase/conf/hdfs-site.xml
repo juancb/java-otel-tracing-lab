@@ -69,4 +69,36 @@
     <name>dfs.namenode.safemode.extension</name>
     <value>0</value>
   </property>
+
+  <!--
+    Latency percentiles (golden-signals work). Hadoop computes NO percentile
+    metrics by default; every RPC/HDFS latency is only an average until these
+    are set. Each interval N adds rolling-window quantile gauges (50/75/90/95/99)
+    named like RpcQueueTime60s99thPercentileLatency to the metrics2 records, so
+    they show up in /jmx, /prom and the JMX exporter alike.
+  -->
+  <!-- RPC server: RpcQueueTime / RpcProcessingTime / RpcLockWaitTime quantiles
+       (NameNode :8020 and DataNode IPC :9867). -->
+  <property>
+    <name>rpc.metrics.quantile.enable</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>rpc.metrics.percentiles.intervals</name>
+    <value>60</value>
+  </property>
+  <!-- HDFS: NameNode edit-log Syncs, DataNode PacketAckRoundTripTimeNanos,
+       FlushNanos, FsyncNanos, SendDataPacket*Nanos, and (with profiling
+       below) per-volume file-IO latencies. -->
+  <property>
+    <name>dfs.metrics.percentiles.intervals</name>
+    <value>60</value>
+  </property>
+  <!-- Profile every DataNode file IO so DataNodeVolume reports read/write/
+       sync latency quantiles and IO error counts. Lab setting: in production
+       sample a few percent. -->
+  <property>
+    <name>dfs.datanode.fileio.profiling.sampling.percentage</name>
+    <value>100</value>
+  </property>
 </configuration>
