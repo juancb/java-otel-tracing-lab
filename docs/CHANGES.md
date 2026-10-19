@@ -49,6 +49,15 @@ producer: sensor.readings publish
 The `apps/consumer/.../Consumer.java` Javadoc and inline comment now explain
 the per-record design choice and reference this changelog entry.
 
+**Also:**
+
+- Fixed the empty "Kafka requests/sec by API" panel in `jmx-services.json`.
+  Kafka's `RequestsPerSec` MBean carries an extra `version=N` key (one per
+  API version), so the generic `RequestMetrics` rule in
+  `jmx-exporter/kafka.yaml` never matched it. Added a dedicated rule that
+  exports `kafka_network_request_requestspersec{api,version,stat}`; the panel
+  now queries `sum by (api) (...)` to roll versions up.
+
 ## 2026-04-29 - Removed Kubernetes + Cilium production track
 
 Tried, learned, removed. The `cilium/` directory, `docs/K8S_PROJECTION.md`,
